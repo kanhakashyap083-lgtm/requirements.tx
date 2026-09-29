@@ -170,9 +170,8 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
         if idx % 50 == 0: gc.collect()
         
         try:
-            time.sleep(random.uniform(0.2, 0.6)) # Anti-Throttling Delay
+            time.sleep(random.uniform(0.2, 0.6)) 
             
-            # Setup dynamic timeframes based on Horizon
             if "Intraday" in horizon_choice:
                 data = yf.Ticker(ticker, session=session).history(period="15d", interval="15m")
                 tgt_m, sl_m = 3.5, 1.5
@@ -182,7 +181,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
             elif "Mid-Term" in horizon_choice:
                 data = yf.Ticker(ticker, session=session).history(period="2y", interval="1wk")
                 tgt_m, sl_m = 5.0, 2.0
-            else: # Long-Term
+            else: 
                 data = yf.Ticker(ticker, session=session).history(period="5y", interval="1mo")
                 tgt_m, sl_m = 8.0, 2.0
                 
@@ -190,7 +189,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
             data.dropna(inplace=True)
 
             live_close = data['Close'].iloc[-1]
-            if live_close < 50: continue # Penny stock filter
+            if live_close < 50: continue 
 
             prev_close = data['Close'].iloc[-2]
             curr_open = data['Open'].iloc[-1]
@@ -211,7 +210,6 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
             avg_range = (data['High'] - data['Low']).rolling(window=14).mean().iloc[-2]
             atr = avg_range if avg_range > 0.5 else 1.0 
 
-            # Nifty logic (Only apply strictly for Intraday/Short Term)
             bullish = False
             if ("Long-Term" in horizon_choice or "Mid-Term" in horizon_choice) or is_nifty_bullish:
                 bullish = (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
@@ -225,7 +223,6 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
                 sl_points = live_close - sl
                 ideal_qty = int(risk_amt / sl_points) if sl_points > 0 else 1
                 
-                # For long term, maybe no leverage (cash). For Intraday, 5x leverage.
                 leverage = 5 if "Intraday" in horizon_choice else 1
                 required_margin = (ideal_qty * live_close) / leverage 
                 
@@ -278,7 +275,6 @@ with tab1:
     
     is_nifty_bullish = True 
     try:
-        # Dynamic Nifty check based on Horizon
         nifty_int = "1d" if "Intraday" in horizon_mode else "1wk"
         nifty_data = yf.Ticker("^NSEI", session=session).history(period="6mo", interval=nifty_int)
         if not nifty_data.empty and len(nifty_data) > 20:
@@ -302,24 +298,27 @@ with tab1:
         
         if vix_val > 24 or vix_val < 10:
             st.error("Market VIX is not safe for trading today. Scanner aborted.")
-            if auto_mode: time.sleep(60); st.rerun()
+            if auto_mode: 
+                time.sleep(60)
+                st.rerun()
             
         elif "Intraday" in horizon_mode and not bypass_time and not (market_open <= now <= market_close):
             st.warning("⏳ Market Time-Lock Active! (Intraday Scan only allowed between 09:30 AM and 02:45 PM).")
             if auto_mode: 
                 time.sleep(60)
-                try: st.rerun()
-                except: st.experimental_rerun()
+                st.rerun()
                 
         elif not all_tickers:
             st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT")
-            if auto_mode: time.sleep(60); st.rerun()
+            if auto_mode: 
+                time.sleep(60)
+                st.rerun()
             
         else:
             st.info("💡 Reduced server load (5 Workers) to prevent Streamlit Throttling. Scanning will be safe & steady.")
             my_bar = st.progress(0, text=f"Deploying AI Squads for {horizon_mode}... Please wait.")
             
-            num_workers = 5 # REDUCED TO FIX THROTTLING ISSUE
+            num_workers = 5 
             chunk_size = len(all_tickers) // num_workers + 1
             squads = [all_tickers[i:i + chunk_size] for i in range(0, len(all_tickers), chunk_size)]
             
@@ -347,8 +346,7 @@ with tab1:
                 update_scorecard() 
                 st.info("⏳ Auto-Pilot Active: Sleeping for 5 minutes before next scan...")
                 time.sleep(300)
-                try: st.rerun()
-                except: st.experimental_rerun()
+                st.rerun()
 
 with tab2:
     st.subheader("🏆 Trade Journal & Live P&L Tracker")
