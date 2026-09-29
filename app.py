@@ -31,7 +31,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(VIX Filter | MTFA | AI Score | Smart Margin | Auto-Pilot | Target Alerts)**")
+st.markdown("**(Multi-Horizon Calls | VIX Filter | AI Score | Smart Margin | Auto-Pilot | Telegram)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
 
@@ -44,9 +44,8 @@ def get_vix():
         vix_data = yf.Ticker("^INDIAVIX", session=session).history(period="1d")
         if not vix_data.empty:
             return round(vix_data['Close'].iloc[-1], 2)
-    except:
-        pass
-    return 15.0 # Default safe VIX
+    except: pass
+    return 15.0 
 
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
@@ -81,7 +80,7 @@ def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         return pd.read_csv(PORTFOLIO_FILE)
     else:
-        return pd.DataFrame(columns=["Date", "Stock", "Score", "Action", "Qty", "Entry", "Target", "SL", "Status", "Net P&L"])
+        return pd.DataFrame(columns=["Date", "Horizon", "Stock", "Score", "Action", "Qty", "Entry", "Target", "SL", "Status", "Net P&L"])
 
 def save_to_portfolio(new_trades):
     df = load_portfolio()
@@ -96,16 +95,16 @@ def save_to_portfolio(new_trades):
             st.warning("⚠️ Max Trades limit reached! Ignoring new signals to prevent over-trading.")
             break
             
-        if not ((df['Stock'] == t['Stock']) & (df['Date'] == today)).any():
+        if not ((df['Stock'] == t['Stock']) & (df['Date'] == today) & (df['Horizon'] == t['Horizon'])).any():
             new_rows.append({
-                "Date": today, "Stock": t['Stock'], "Score": t['AI Score'], "Action": t['Action'],
-                "Qty": t['Qty'], "Entry": t['Entry'], "Target": t['Target'], "SL": t['SL'],
-                "Status": "Active ⏳", "Net P&L": 0.0
+                "Date": today, "Horizon": t['Horizon'], "Stock": t['Stock'], "Score": t['AI Score'], 
+                "Action": t['Action'], "Qty": t['Qty'], "Entry": t['Entry'], "Target": t['Target'], 
+                "SL": t['SL'], "Status": "Active ⏳", "Net P&L": 0.0
             })
             active_trades += 1
             
-            # Send Telegram Alert for NEW ENTRY
-            msg = f"🚨 NEW AI BREAKOUT!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty to Buy: {t['Qty']}"
+            # Send Telegram Alert for NEW CALL
+            msg = f"🚨 NEW {t['Horizon'].upper()} CALL!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty to Buy: {t['Qty']}"
             send_telegram_alert(msg)
             
     if new_rows:
@@ -118,10 +117,13 @@ def update_scorecard():
     today = get_ist_time().strftime("%Y-%m-%d")
     
     for index, row in df.iterrows():
-        if row['Status'] == "Active ⏳" and row['Date'] == today:
+        if row['Status'] == "Active ⏳":
             try:
-                data = yf.Ticker(f"{row['Stock']}.NS", session=session).history(period="1d", interval="5m")
+                # Intraday check 5m, Long term check 1d
+                check_interval = "5m" if "Intraday" in row['Horizon'] else "1d"
+                data = yf.Ticker(f"{row['Stock']}.NS", session=session).history(period="5d", interval=check_interval)
                 if data.empty: continue
+                
                 high_today = data['High'].max()
                 low_today = data['Low'].min()
                 
@@ -142,8 +144,7 @@ def update_scorecard():
                         df.at[index, 'Net P&L'] = net_profit
                         df.at[index, 'Status'] = "Target Hit 🎯"
                         
-                        # Send Telegram Alert for TARGET HIT
-                        msg = f"🎯 TARGET HIT! 🥳\n📈 Stock: {row['Stock']}\n💰 Net Profit: ₹{net_profit}\n🚀 Level Reached: ₹{tgt}\n✅ Safely Booked!"
+                        msg = f"🎯 {row['Horizon']} TARGET HIT! 🥳\n📈 Stock: {row['Stock']}\n💰 Net Profit: ₹{net_profit}\n🚀 Level Reached: ₹{tgt}\n✅ Safely Booked!"
                         send_telegram_alert(msg)
                         
                     elif low_today <= sl: 
@@ -155,72 +156,81 @@ def update_scorecard():
                         df.at[index, 'Net P&L'] = net_loss
                         df.at[index, 'Status'] = "SL Hit 🛑"
                         
-                        # Send Telegram Alert for SL HIT
-                        msg = f"🛑 STOPLOSS HIT\n📈 Stock: {row['Stock']}\n💔 Net Loss: ₹{net_loss}\n📉 Level Broken: ₹{sl}"
+                        msg = f"🛑 {row['Horizon']} STOPLOSS HIT\n📈 Stock: {row['Stock']}\n💔 Net Loss: ₹{net_loss}\n📉 Level Broken: ₹{sl}"
                         send_telegram_alert(msg)
             except: pass
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
-# --- THE MEGA WORKER ROBOT ---
-def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
+# --- THE MEGA WORKER ROBOT (Multi-Horizon Engine) ---
+def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choice):
     found_trades = []
     
     for idx, ticker in enumerate(tickers):
         if idx % 50 == 0: gc.collect()
         
         try:
-            time.sleep(random.uniform(0.1, 0.4)) 
+            time.sleep(random.uniform(0.2, 0.6)) # Anti-Throttling Delay
             
-            data_15m = yf.Ticker(ticker, session=session).history(period="10d", interval="15m")
-            data_1d = yf.Ticker(ticker, session=session).history(period="1mo", interval="1d")
-            
-            if len(data_15m) < 30 or len(data_1d) < 22: continue
-            data_15m.dropna(inplace=True)
+            # Setup dynamic timeframes based on Horizon
+            if "Intraday" in horizon_choice:
+                data = yf.Ticker(ticker, session=session).history(period="15d", interval="15m")
+                tgt_m, sl_m = 3.5, 1.5
+            elif "Short-Term" in horizon_choice:
+                data = yf.Ticker(ticker, session=session).history(period="6mo", interval="1d")
+                tgt_m, sl_m = 4.0, 2.0
+            elif "Mid-Term" in horizon_choice:
+                data = yf.Ticker(ticker, session=session).history(period="2y", interval="1wk")
+                tgt_m, sl_m = 5.0, 2.0
+            else: # Long-Term
+                data = yf.Ticker(ticker, session=session).history(period="5y", interval="1mo")
+                tgt_m, sl_m = 8.0, 2.0
+                
+            if len(data) < 30: continue
+            data.dropna(inplace=True)
 
-            daily_ema_9 = data_1d['Close'].ewm(span=9).mean().iloc[-2]
-            daily_ema_21 = data_1d['Close'].ewm(span=21).mean().iloc[-2]
-            daily_trend_up = daily_ema_9 > daily_ema_21
-            
-            if not is_nifty_bullish and daily_trend_up: continue 
-            
-            live_close = data_15m['Close'].iloc[-1]
-            avg_daily_vol = data_1d['Volume'].rolling(20).mean().iloc[-2]
-            if live_close < 100 or avg_daily_vol < 500000: continue
+            live_close = data['Close'].iloc[-1]
+            if live_close < 50: continue # Penny stock filter
 
-            prev_day_close = data_1d['Close'].iloc[-2]
-            today_open = data_1d['Open'].iloc[-1]
-            gap_pct = abs((today_open - prev_day_close) / prev_day_close) * 100
+            prev_close = data['Close'].iloc[-2]
+            curr_open = data['Open'].iloc[-1]
+            gap_pct = abs((curr_open - prev_close) / prev_close) * 100
             if gap_pct > 3.0: continue
 
-            closed_close = data_15m['Close'].iloc[-2]
-            closed_vol = data_15m['Volume'].iloc[-2]
+            closed_close = data['Close'].iloc[-2]
+            closed_vol = data['Volume'].iloc[-2]
 
-            ema_9 = data_15m['Close'].ewm(span=9).mean().iloc[-2]
-            ema_21 = data_15m['Close'].ewm(span=21).mean().iloc[-2]
-            rsi_14 = calculate_rsi(data_15m).iloc[-2]
+            ema_9 = data['Close'].ewm(span=9).mean().iloc[-2]
+            ema_21 = data['Close'].ewm(span=21).mean().iloc[-2]
+            rsi_14 = calculate_rsi(data).iloc[-2]
 
-            avg_vol_20 = data_15m['Volume'].rolling(window=20).mean().iloc[-3]
+            avg_vol_20 = data['Volume'].rolling(window=20).mean().iloc[-3]
             if pd.isna(avg_vol_20) or avg_vol_20 <= 0: avg_vol_20 = 1 
             whale_spike = closed_vol > (avg_vol_20 * 1.5)
             
-            avg_range = (data_15m['High'] - data_15m['Low']).rolling(window=14).mean().iloc[-2]
+            avg_range = (data['High'] - data['Low']).rolling(window=14).mean().iloc[-2]
             atr = avg_range if avg_range > 0.5 else 1.0 
 
-            bullish = daily_trend_up and (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
+            # Nifty logic (Only apply strictly for Intraday/Short Term)
+            bullish = False
+            if ("Long-Term" in horizon_choice or "Mid-Term" in horizon_choice) or is_nifty_bullish:
+                bullish = (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
             
             if bullish:
                 stock_name = ticker.replace(".NS", "")
                 
-                tgt = live_close + (atr * 3.5) 
-                sl = live_close - (atr * 1.5)
+                tgt = live_close + (atr * tgt_m) 
+                sl = live_close - (atr * sl_m)
                 
                 sl_points = live_close - sl
                 ideal_qty = int(risk_amt / sl_points) if sl_points > 0 else 1
-                required_margin = (ideal_qty * live_close) / 5 
+                
+                # For long term, maybe no leverage (cash). For Intraday, 5x leverage.
+                leverage = 5 if "Intraday" in horizon_choice else 1
+                required_margin = (ideal_qty * live_close) / leverage 
                 
                 if required_margin > capital_amt:
-                    ideal_qty = int((capital_amt * 5) / live_close) 
+                    ideal_qty = int((capital_amt * leverage) / live_close) 
                 if ideal_qty <= 0: continue 
 
                 score = 60 
@@ -230,6 +240,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
 
                 found_trades.append({
                     "Stock": stock_name,
+                    "Horizon": horizon_choice,
                     "AI Score": f"{score}/100",
                     "Action": "🟢 BUY",
                     "Qty": ideal_qty,
@@ -247,24 +258,29 @@ all_tickers = load_symbols()
 vix_val = get_vix()
 
 st.sidebar.markdown("### ⚙️ Pro-Trader Risk Manager")
+horizon_mode = st.sidebar.selectbox("🎯 Select Trading Horizon", 
+    ["Intraday (15 Min)", "Short-Term (Daily)", "Mid-Term (Weekly)", "Long-Term (Monthly)"])
+    
 capital = st.sidebar.number_input("Total Trading Capital (₹)", min_value=10000, value=50000, step=5000)
 risk = st.sidebar.number_input("Risk Per Trade (₹)", min_value=500, value=1000, step=500)
-st.session_state['max_trades'] = st.sidebar.number_input("Max Trades per Day", min_value=1, value=5)
+st.session_state['max_trades'] = st.sidebar.number_input("Max Calls allowed per scan", min_value=1, value=5)
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"📊 **India VIX:** {vix_val}")
-if vix_val > 24: st.sidebar.error("⚠️ VIX is too High! Trading Blocked.")
+if vix_val > 24: st.sidebar.error("⚠️ VIX is too High! Extreme Panic Market.")
 elif vix_val < 10: st.sidebar.warning("⚠️ VIX is too Low! Dead Market.")
 else: st.sidebar.success("🟢 VIX is Optimal. Safe to Trade.")
 
 st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
 
 with tab1:
-    st.subheader("Market Mood & Auto-Pilot Engine")
+    st.subheader(f"Multi-Horizon Engine: {horizon_mode}")
     
     is_nifty_bullish = True 
     try:
-        nifty_data = yf.Ticker("^NSEI", session=session).history(period="1mo", interval="1d")
+        # Dynamic Nifty check based on Horizon
+        nifty_int = "1d" if "Intraday" in horizon_mode else "1wk"
+        nifty_data = yf.Ticker("^NSEI", session=session).history(period="6mo", interval=nifty_int)
         if not nifty_data.empty and len(nifty_data) > 20:
             n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
             n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
@@ -273,12 +289,12 @@ with tab1:
         pass
         
     if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
-    else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active - Avoiding Traps)")
+    else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active)")
     
     st.markdown("---")
     auto_mode = st.checkbox("🤖 ENABLE AUTO-PILOT MODE (Scans & P&L Check every 5 Mins)", value=False)
     bypass_time = st.checkbox("Bypass Time-Lock (For Testing only)", value=False)
-    manual_scan = st.button("🔥 FIRE MEGA SCANNER (Manual Once)", use_container_width=True)
+    manual_scan = st.button("🔥 GENERATE LIVE CALLS (Manual Once)", use_container_width=True)
 
     if auto_mode or manual_scan:
         now = get_ist_time().time()
@@ -288,8 +304,8 @@ with tab1:
             st.error("Market VIX is not safe for trading today. Scanner aborted.")
             if auto_mode: time.sleep(60); st.rerun()
             
-        elif not bypass_time and not (market_open <= now <= market_close):
-            st.warning("⏳ Market Time-Lock Active! (Scan only allowed between 09:30 AM and 02:45 PM).")
+        elif "Intraday" in horizon_mode and not bypass_time and not (market_open <= now <= market_close):
+            st.warning("⏳ Market Time-Lock Active! (Intraday Scan only allowed between 09:30 AM and 02:45 PM).")
             if auto_mode: 
                 time.sleep(60)
                 try: st.rerun()
@@ -300,14 +316,16 @@ with tab1:
             if auto_mode: time.sleep(60); st.rerun()
             
         else:
-            my_bar = st.progress(0, text="Deploying 15 AI Squads across NSE... Please wait.")
-            num_workers = 15
+            st.info("💡 Reduced server load (5 Workers) to prevent Streamlit Throttling. Scanning will be safe & steady.")
+            my_bar = st.progress(0, text=f"Deploying AI Squads for {horizon_mode}... Please wait.")
+            
+            num_workers = 5 # REDUCED TO FIX THROTTLING ISSUE
             chunk_size = len(all_tickers) // num_workers + 1
             squads = [all_tickers[i:i + chunk_size] for i in range(0, len(all_tickers), chunk_size)]
             
             all_results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_nifty_bullish) for i in range(len(squads))]
+                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_nifty_bullish, horizon_mode) for i in range(len(squads))]
                 completed = 0
                 for future in concurrent.futures.as_completed(futures):
                     res = future.result()
@@ -318,36 +336,36 @@ with tab1:
             my_bar.empty()
             if all_results:
                 all_results = sorted(all_results, key=lambda x: x['AI Score'], reverse=True)
-                st.success(f"🎉 BOOM! Found {len(all_results)} Institutional Breakouts.")
+                st.success(f"🎉 BOOM! Found {len(all_results)} {horizon_mode} Calls.")
                 st.dataframe(pd.DataFrame(all_results), use_container_width=True)
                 save_to_portfolio(all_results)
             else:
-                st.warning("No high-quality Operator Breakouts found right now. Wait for the perfect setup!")
+                st.warning(f"No high-quality {horizon_mode} Breakouts found right now.")
                 
             if auto_mode:
                 st.info("🔄 Checking Live P&L and Sending Telegram Alerts if Target Hit...")
-                update_scorecard() # P&L Check aur Telegram Alerts yahan se trigger honge
+                update_scorecard() 
                 st.info("⏳ Auto-Pilot Active: Sleeping for 5 minutes before next scan...")
                 time.sleep(300)
                 try: st.rerun()
                 except: st.experimental_rerun()
 
 with tab2:
-    st.subheader("🏆 Trade Journal (Real Net P&L)")
+    st.subheader("🏆 Trade Journal & Live P&L Tracker")
     if st.button("🔄 Refresh Live Net P&L", type="primary"):
         with st.spinner("Calculating Brokerage & Market Prices..."):
             updated_df = update_scorecard()
         
         if updated_df.empty:
-            st.info("No trades taken today. Run the Scanner first!")
+            st.info("No trades recorded yet!")
         else:
-            today = get_ist_time().strftime("%Y-%m-%d")
-            today_trades = updated_df[updated_df['Date'] == today]
+            active_trades = updated_df[updated_df['Status'] == "Active ⏳"]
+            closed_trades = updated_df[updated_df['Status'] != "Active ⏳"]
             
-            if not today_trades.empty:
-                total_net_pnl = today_trades['Net P&L'].sum()
-                targets = len(today_trades[today_trades['Status'] == "Target Hit 🎯"])
-                sls = len(today_trades[today_trades['Status'] == "SL Hit 🛑"])
+            if not closed_trades.empty:
+                total_net_pnl = closed_trades['Net P&L'].sum()
+                targets = len(closed_trades[closed_trades['Status'] == "Target Hit 🎯"])
+                sls = len(closed_trades[closed_trades['Status'] == "SL Hit 🛑"])
                 win_rate = round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0
                 
                 col1, col2, col3, col4 = st.columns(4)
@@ -355,16 +373,14 @@ with tab2:
                 col2.metric("Target Achieved 🎯", targets, delta_color="normal")
                 col3.metric("Stoploss Hit 🛑", sls, delta="-", delta_color="inverse")
                 col4.metric("Real Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
-                
-                st.write("### 📝 Full Audit Journal (Brokerage Deducted)")
-                st.dataframe(
-                    today_trades.style.applymap(
-                        lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
-                        subset=['Status']
-                    ), use_container_width=True
-                )
-                
-                csv = updated_df.to_csv(index=False).encode('utf-8')
-                st.download_button("💾 Download Full Journal Backup", data=csv, file_name="My_Algo_Journal.csv", mime="text/csv")
-            else:
-                st.info("No trades recorded for today yet.")
+            
+            st.write("### 📝 Full Audit Journal (Brokerage Deducted)")
+            st.dataframe(
+                updated_df.style.applymap(
+                    lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
+                    subset=['Status']
+                ), use_container_width=True
+            )
+            
+            csv = updated_df.to_csv(index=False).encode('utf-8')
+            st.download_button("💾 Download Full Journal Backup", data=csv, file_name="My_Algo_Journal.csv", mime="text/csv")
