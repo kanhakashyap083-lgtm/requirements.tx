@@ -9,8 +9,13 @@ import os
 import datetime
 import pytz
 import gc
+import requests
 
 warnings.filterwarnings("ignore")
+
+# --- SMART BROWSER SESSION (Yahoo Rate-Limit Bypass) ---
+session = requests.Session()
+session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'})
 
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
@@ -25,12 +30,12 @@ def get_ist_time():
 
 def get_vix():
     try:
-        vix_data = yf.Ticker("^INDIAVIX").history(period="1d")
+        vix_data = yf.Ticker("^INDIAVIX", session=session).history(period="1d")
         if not vix_data.empty:
             return round(vix_data['Close'].iloc[-1], 2)
     except:
         pass
-    return 15.0 # Default safe VIX agar Yahoo fail ho jaye
+    return 15.0 # Default safe VIX
 
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
@@ -41,17 +46,16 @@ def calculate_rsi(data, period=14):
     rs = ema_up / ema_down
     return 100 - (100 / (1 + rs))
 
-# --- LOAD NSE STOCKS (CSV or DAT File) ---
+# --- LOAD NSE STOCKS ---
 @st.cache_data
 def load_symbols():
     symbols = []
     try:
-        # Pura NSE scan karne ke liye DAT file check karega
         if os.path.exists("C_VAR1_29092026_2.DAT"):
             with open("C_VAR1_29092026_2.DAT", "r") as f:
                 for line in f:
                     parts = line.strip().split(',')
-                    if len(parts) > 3 and parts[2] == 'EQ': # Sirf Equity (EQ) stocks
+                    if len(parts) > 3 and parts[2] == 'EQ': 
                         symbols.append(parts[1] + ".NS")
             symbols = list(set(symbols))
         elif os.path.exists("PE_290926.csv"):
@@ -61,7 +65,7 @@ def load_symbols():
         st.error(f"❌ File Load Error: {e}")
     return symbols
 
-# --- PORTFOLIO & SCORECARD DATABASE ---
+# --- PORTFOLIO DATABASE ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         return pd.read_csv(PORTFOLIO_FILE)
@@ -73,13 +77,12 @@ def save_to_portfolio(new_trades):
     today = get_ist_time().strftime("%Y-%m-%d")
     new_rows = []
     
-    # Check max open trades limit
     active_trades = len(df[(df['Status'] == "Active ⏳") & (df['Date'] == today)])
     max_allowed = st.session_state.get('max_trades', 5)
     
     for t in new_trades:
         if active_trades >= max_allowed:
-            st.warning("⚠️ Max Trades limit reached for today! Ignoring new signals to prevent over-trading.")
+            st.warning("⚠️ Max Trades limit reached! Ignoring new signals to prevent over-trading.")
             break
             
         if not ((df['Stock'] == t['Stock']) & (df['Date'] == today)).any():
@@ -102,7 +105,7 @@ def update_scorecard():
     for index, row in df.iterrows():
         if row['Status'] == "Active ⏳" and row['Date'] == today:
             try:
-                data = yf.Ticker(f"{row['Stock']}.NS").history(period="1d", interval="5m")
+                data = yf.Ticker(f"{row['Stock']}.NS", session=session).history(period="1d", interval="5m")
                 if data.empty: continue
                 high_today = data['High'].max()
                 low_today = data['Low'].min()
@@ -112,7 +115,6 @@ def update_scorecard():
                 tgt = float(row['Target'])
                 sl = float(row['SL'])
                 
-                # Brokerage + STT Approx (0.05% of turnover)
                 turnover_buy = qty * entry
                 
                 if "BUY" in row['Action']:
@@ -132,44 +134,37 @@ def update_scorecard():
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
-# --- THE MEGA WORKER ROBOT (Deep Logic) ---
+# --- THE MEGA WORKER ROBOT ---
 def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
     found_trades = []
     
     for idx, ticker in enumerate(tickers):
-        # RAM Protection: Har 50 stock ke baad garbage collect
         if idx % 50 == 0: gc.collect()
         
         try:
-            time.sleep(random.uniform(0.1, 0.4)) # Smart Anti-Ban Jitter
+            time.sleep(random.uniform(0.1, 0.4)) 
             
-            # Fetch 10-day 15m data for Intraday & 1-mo Daily data for MTFA
-            data_15m = yf.Ticker(ticker).history(period="10d", interval="15m")
-            data_1d = yf.Ticker(ticker).history(period="1mo", interval="1d")
+            data_15m = yf.Ticker(ticker, session=session).history(period="10d", interval="15m")
+            data_1d = yf.Ticker(ticker, session=session).history(period="1mo", interval="1d")
             
             if len(data_15m) < 30 or len(data_1d) < 22: continue
             data_15m.dropna(inplace=True)
 
-            # 1. MTFA (Multi-Timeframe Analysis)
             daily_ema_9 = data_1d['Close'].ewm(span=9).mean().iloc[-2]
             daily_ema_21 = data_1d['Close'].ewm(span=21).mean().iloc[-2]
             daily_trend_up = daily_ema_9 > daily_ema_21
             
-            # Nifty Boss Filter
             if not is_nifty_bullish and daily_trend_up: continue 
             
-            # 2. Institutional Liquidity & Penny Stock Filter
             live_close = data_15m['Close'].iloc[-1]
             avg_daily_vol = data_1d['Volume'].rolling(20).mean().iloc[-2]
             if live_close < 100 or avg_daily_vol < 500000: continue
 
-            # 3. Gap-Up/Down Trap Rejector (Max 3% allowed)
             prev_day_close = data_1d['Close'].iloc[-2]
             today_open = data_1d['Open'].iloc[-1]
             gap_pct = abs((today_open - prev_day_close) / prev_day_close) * 100
             if gap_pct > 3.0: continue
 
-            # 4. No-Repaint 15m Logic (Use last closed candle)
             closed_close = data_15m['Close'].iloc[-2]
             closed_vol = data_15m['Volume'].iloc[-2]
 
@@ -181,7 +176,6 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
             if pd.isna(avg_vol_20) or avg_vol_20 <= 0: avg_vol_20 = 1 
             whale_spike = closed_vol > (avg_vol_20 * 1.5)
             
-            # 5. Volatility (ATR) Risk Management
             avg_range = (data_15m['High'] - data_15m['Low']).rolling(window=14).mean().iloc[-2]
             atr = avg_range if avg_range > 0.5 else 1.0 
 
@@ -190,24 +184,21 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
             if bullish:
                 stock_name = ticker.replace(".NS", "")
                 
-                # Entry, Target (1:2+), SL
                 tgt = live_close + (atr * 3.5) 
                 sl = live_close - (atr * 1.5)
                 
-                # 6. Smart Margin & Quantity Calculator
                 sl_points = live_close - sl
                 ideal_qty = int(risk_amt / sl_points) if sl_points > 0 else 1
-                required_margin = (ideal_qty * live_close) / 5 # Assuming 5x leverage
+                required_margin = (ideal_qty * live_close) / 5 
                 
                 if required_margin > capital_amt:
-                    ideal_qty = int((capital_amt * 5) / live_close) # Fallback to max capital
-                if ideal_qty <= 0: continue # Insufficient capital
+                    ideal_qty = int((capital_amt * 5) / live_close) 
+                if ideal_qty <= 0: continue 
 
-                # 7. AI Signal Scoring (Max 100)
-                score = 60 # Base
-                if closed_vol > (avg_vol_20 * 3): score += 20 # Mega Volume
-                if rsi_14 > 70: score += 10 # High Momentum
-                if gap_pct < 1.0: score += 10 # Flat Opening (Safe)
+                score = 60 
+                if closed_vol > (avg_vol_20 * 3): score += 20 
+                if rsi_14 > 70: score += 10 
+                if gap_pct < 1.0: score += 10 
 
                 found_trades.append({
                     "Stock": stock_name,
@@ -243,13 +234,16 @@ st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
 with tab1:
     st.subheader("Market Mood & Scanner")
     
-    # Nifty Trend Check
-    nifty_data = yf.Ticker("^NSEI").history(period="1mo", interval="1d")
-    is_nifty_bullish = True
-    if len(nifty_data) > 20:
-        n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
-        n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
-        is_nifty_bullish = n_ema9 > n_ema21
+    # NIFTY TREND WITH CRASH-PROOF SHIELD
+    is_nifty_bullish = True # Default safe assumption
+    try:
+        nifty_data = yf.Ticker("^NSEI", session=session).history(period="1mo", interval="1d")
+        if not nifty_data.empty and len(nifty_data) > 20:
+            n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
+            n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
+            is_nifty_bullish = n_ema9 > n_ema21
+    except Exception as e:
+        st.warning("⚠️ Yahoo Rate Limit on Nifty check. Running in Bypass Mode.")
         
     if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
     else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active - Avoiding Traps)")
@@ -263,9 +257,9 @@ with tab1:
         if vix_val > 24 or vix_val < 10:
             st.error("Market VIX is not safe for trading today. Scanner aborted by Risk Manager.")
         elif not bypass_time and not (market_open <= now <= market_close):
-            st.warning("⏳ Market Time-Lock Active! (Scan only allowed between 09:30 AM and 02:45 PM to avoid traps).")
+            st.warning("⏳ Market Time-Lock Active! (Scan only allowed between 09:30 AM and 02:45 PM).")
         elif not all_tickers:
-            st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT or PE_290926.csv")
+            st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT")
         else:
             my_bar = st.progress(0, text="Deploying 15 AI Squads across NSE... Please wait.")
             num_workers = 15
@@ -284,7 +278,6 @@ with tab1:
 
             my_bar.empty()
             if all_results:
-                # Sort by AI Score (Top signals first)
                 all_results = sorted(all_results, key=lambda x: x['AI Score'], reverse=True)
                 st.success(f"🎉 BOOM! Found {len(all_results)} Institutional Breakouts.")
                 st.dataframe(pd.DataFrame(all_results), use_container_width=True)
@@ -304,25 +297,27 @@ with tab2:
             today = get_ist_time().strftime("%Y-%m-%d")
             today_trades = updated_df[updated_df['Date'] == today]
             
-            total_net_pnl = today_trades['Net P&L'].sum()
-            targets = len(today_trades[today_trades['Status'] == "Target Hit 🎯"])
-            sls = len(today_trades[today_trades['Status'] == "SL Hit 🛑"])
-            win_rate = round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Win Rate 📊", f"{win_rate}%")
-            col2.metric("Target Achieved 🎯", targets, delta_color="normal")
-            col3.metric("Stoploss Hit 🛑", sls, delta="-", delta_color="inverse")
-            col4.metric("Real Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
-            
-            st.write("### 📝 Full Audit Journal (Brokerage Deducted)")
-            st.dataframe(
-                today_trades.style.applymap(
-                    lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
-                    subset=['Status']
-                ), use_container_width=True
-            )
-            
-            # Download Backup Button
-            csv = updated_df.to_csv(index=False).encode('utf-8')
-            st.download_button("💾 Download Full Journal Backup", data=csv, file_name="My_Algo_Journal.csv", mime="text/csv")
+            if not today_trades.empty:
+                total_net_pnl = today_trades['Net P&L'].sum()
+                targets = len(today_trades[today_trades['Status'] == "Target Hit 🎯"])
+                sls = len(today_trades[today_trades['Status'] == "SL Hit 🛑"])
+                win_rate = round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Win Rate 📊", f"{win_rate}%")
+                col2.metric("Target Achieved 🎯", targets, delta_color="normal")
+                col3.metric("Stoploss Hit 🛑", sls, delta="-", delta_color="inverse")
+                col4.metric("Real Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
+                
+                st.write("### 📝 Full Audit Journal (Brokerage Deducted)")
+                st.dataframe(
+                    today_trades.style.applymap(
+                        lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
+                        subset=['Status']
+                    ), use_container_width=True
+                )
+                
+                csv = updated_df.to_csv(index=False).encode('utf-8')
+                st.download_button("💾 Download Full Journal Backup", data=csv, file_name="My_Algo_Journal.csv", mime="text/csv")
+            else:
+                st.info("No trades recorded for today yet.")
