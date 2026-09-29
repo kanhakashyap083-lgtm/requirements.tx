@@ -13,6 +13,17 @@ import requests
 
 warnings.filterwarnings("ignore")
 
+# --- TELEGRAM SETUP ---
+TELEGRAM_TOKEN = "8657774899:AAGKqx2_TgaoYAbUljSAXt5l9BzL_cnyCPE"
+TELEGRAM_CHAT_ID = "8900320752"
+
+def send_telegram_alert(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        requests.post(url, json=payload, timeout=5)
+    except: pass
+
 # --- SMART BROWSER SESSION (Yahoo Rate-Limit Bypass) ---
 session = requests.Session()
 session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'})
@@ -20,7 +31,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(VIX Filter | MTFA | AI Signal Score | Smart Margin | Auto-Pilot | No-Repaint)**")
+st.markdown("**(VIX Filter | MTFA | AI Score | Smart Margin | Auto-Pilot | Target Alerts)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
 
@@ -65,7 +76,7 @@ def load_symbols():
         st.error(f"❌ File Load Error: {e}")
     return symbols
 
-# --- PORTFOLIO DATABASE ---
+# --- PORTFOLIO DATABASE & TELEGRAM ALERTS ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         return pd.read_csv(PORTFOLIO_FILE)
@@ -92,6 +103,10 @@ def save_to_portfolio(new_trades):
                 "Status": "Active ⏳", "Net P&L": 0.0
             })
             active_trades += 1
+            
+            # Send Telegram Alert for NEW ENTRY
+            msg = f"🚨 NEW AI BREAKOUT!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty to Buy: {t['Qty']}"
+            send_telegram_alert(msg)
             
     if new_rows:
         df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
@@ -122,14 +137,27 @@ def update_scorecard():
                         turnover_sell = qty * tgt
                         brokerage = (turnover_buy + turnover_sell) * 0.0005
                         gross_profit = (tgt - entry) * qty
-                        df.at[index, 'Net P&L'] = round(gross_profit - brokerage, 2)
+                        net_profit = round(gross_profit - brokerage, 2)
+                        
+                        df.at[index, 'Net P&L'] = net_profit
                         df.at[index, 'Status'] = "Target Hit 🎯"
+                        
+                        # Send Telegram Alert for TARGET HIT
+                        msg = f"🎯 TARGET HIT! 🥳\n📈 Stock: {row['Stock']}\n💰 Net Profit: ₹{net_profit}\n🚀 Level Reached: ₹{tgt}\n✅ Safely Booked!"
+                        send_telegram_alert(msg)
+                        
                     elif low_today <= sl: 
                         turnover_sell = qty * sl
                         brokerage = (turnover_buy + turnover_sell) * 0.0005
                         gross_loss = (entry - sl) * qty
-                        df.at[index, 'Net P&L'] = round(-gross_loss - brokerage, 2)
+                        net_loss = round(-gross_loss - brokerage, 2)
+                        
+                        df.at[index, 'Net P&L'] = net_loss
                         df.at[index, 'Status'] = "SL Hit 🛑"
+                        
+                        # Send Telegram Alert for SL HIT
+                        msg = f"🛑 STOPLOSS HIT\n📈 Stock: {row['Stock']}\n💔 Net Loss: ₹{net_loss}\n📉 Level Broken: ₹{sl}"
+                        send_telegram_alert(msg)
             except: pass
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
@@ -202,7 +230,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish):
 
                 found_trades.append({
                     "Stock": stock_name,
-                    "AI Score": f"{score}/100 🔥",
+                    "AI Score": f"{score}/100",
                     "Action": "🟢 BUY",
                     "Qty": ideal_qty,
                     "Entry": round(live_close, 2),
@@ -225,8 +253,8 @@ st.session_state['max_trades'] = st.sidebar.number_input("Max Trades per Day", m
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"📊 **India VIX:** {vix_val}")
-if vix_val > 24: st.sidebar.error("⚠️ VIX is too High! Extreme Panic Market. Trading Blocked.")
-elif vix_val < 10: st.sidebar.warning("⚠️ VIX is too Low! Dead Market. Fake breakouts possible.")
+if vix_val > 24: st.sidebar.error("⚠️ VIX is too High! Trading Blocked.")
+elif vix_val < 10: st.sidebar.warning("⚠️ VIX is too Low! Dead Market.")
 else: st.sidebar.success("🟢 VIX is Optimal. Safe to Trade.")
 
 st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
@@ -247,9 +275,8 @@ with tab1:
     if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
     else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active - Avoiding Traps)")
     
-    # NEW AUTO-PILOT FEATURE
     st.markdown("---")
-    auto_mode = st.checkbox("🤖 ENABLE AUTO-PILOT MODE (Scans automatically every 5 Mins)", value=False)
+    auto_mode = st.checkbox("🤖 ENABLE AUTO-PILOT MODE (Scans & P&L Check every 5 Mins)", value=False)
     bypass_time = st.checkbox("Bypass Time-Lock (For Testing only)", value=False)
     manual_scan = st.button("🔥 FIRE MEGA SCANNER (Manual Once)", use_container_width=True)
 
@@ -258,7 +285,7 @@ with tab1:
         market_open, market_close = datetime.time(9, 30), datetime.time(14, 45)
         
         if vix_val > 24 or vix_val < 10:
-            st.error("Market VIX is not safe for trading today. Scanner aborted by Risk Manager.")
+            st.error("Market VIX is not safe for trading today. Scanner aborted.")
             if auto_mode: time.sleep(60); st.rerun()
             
         elif not bypass_time and not (market_open <= now <= market_close):
@@ -297,14 +324,13 @@ with tab1:
             else:
                 st.warning("No high-quality Operator Breakouts found right now. Wait for the perfect setup!")
                 
-            # THE 5 MINUTE LOOP FOR AUTO-PILOT
             if auto_mode:
+                st.info("🔄 Checking Live P&L and Sending Telegram Alerts if Target Hit...")
+                update_scorecard() # P&L Check aur Telegram Alerts yahan se trigger honge
                 st.info("⏳ Auto-Pilot Active: Sleeping for 5 minutes before next scan...")
-                time.sleep(300) # 300 seconds = 5 minutes
-                try: 
-                    st.rerun()
-                except: 
-                    st.experimental_rerun()
+                time.sleep(300)
+                try: st.rerun()
+                except: st.experimental_rerun()
 
 with tab2:
     st.subheader("🏆 Trade Journal (Real Net P&L)")
