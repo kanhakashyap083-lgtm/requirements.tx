@@ -20,7 +20,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(VIX Filter | MTFA | AI Signal Score | Smart Margin | Auto-Quantity | No-Repaint)**")
+st.markdown("**(VIX Filter | MTFA | AI Signal Score | Smart Margin | Auto-Pilot | No-Repaint)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
 
@@ -232,34 +232,46 @@ else: st.sidebar.success("🟢 VIX is Optimal. Safe to Trade.")
 st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
 
 with tab1:
-    st.subheader("Market Mood & Scanner")
+    st.subheader("Market Mood & Auto-Pilot Engine")
     
-    # NIFTY TREND WITH CRASH-PROOF SHIELD
-    is_nifty_bullish = True # Default safe assumption
+    is_nifty_bullish = True 
     try:
         nifty_data = yf.Ticker("^NSEI", session=session).history(period="1mo", interval="1d")
         if not nifty_data.empty and len(nifty_data) > 20:
             n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
             n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
             is_nifty_bullish = n_ema9 > n_ema21
-    except Exception as e:
-        st.warning("⚠️ Yahoo Rate Limit on Nifty check. Running in Bypass Mode.")
+    except Exception:
+        pass
         
     if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
     else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active - Avoiding Traps)")
     
-    bypass_time = st.checkbox("Bypass Time-Lock (For Testing only)")
+    # NEW AUTO-PILOT FEATURE
+    st.markdown("---")
+    auto_mode = st.checkbox("🤖 ENABLE AUTO-PILOT MODE (Scans automatically every 5 Mins)", value=False)
+    bypass_time = st.checkbox("Bypass Time-Lock (For Testing only)", value=False)
+    manual_scan = st.button("🔥 FIRE MEGA SCANNER (Manual Once)", use_container_width=True)
 
-    if st.button("🔥 FIRE MEGA SCANNER", use_container_width=True):
+    if auto_mode or manual_scan:
         now = get_ist_time().time()
         market_open, market_close = datetime.time(9, 30), datetime.time(14, 45)
         
         if vix_val > 24 or vix_val < 10:
             st.error("Market VIX is not safe for trading today. Scanner aborted by Risk Manager.")
+            if auto_mode: time.sleep(60); st.rerun()
+            
         elif not bypass_time and not (market_open <= now <= market_close):
             st.warning("⏳ Market Time-Lock Active! (Scan only allowed between 09:30 AM and 02:45 PM).")
+            if auto_mode: 
+                time.sleep(60)
+                try: st.rerun()
+                except: st.experimental_rerun()
+                
         elif not all_tickers:
             st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT")
+            if auto_mode: time.sleep(60); st.rerun()
+            
         else:
             my_bar = st.progress(0, text="Deploying 15 AI Squads across NSE... Please wait.")
             num_workers = 15
@@ -284,6 +296,15 @@ with tab1:
                 save_to_portfolio(all_results)
             else:
                 st.warning("No high-quality Operator Breakouts found right now. Wait for the perfect setup!")
+                
+            # THE 5 MINUTE LOOP FOR AUTO-PILOT
+            if auto_mode:
+                st.info("⏳ Auto-Pilot Active: Sleeping for 5 minutes before next scan...")
+                time.sleep(300) # 300 seconds = 5 minutes
+                try: 
+                    st.rerun()
+                except: 
+                    st.experimental_rerun()
 
 with tab2:
     st.subheader("🏆 Trade Journal (Real Net P&L)")
