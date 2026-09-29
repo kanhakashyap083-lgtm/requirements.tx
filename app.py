@@ -24,14 +24,14 @@ def send_telegram_alert(message):
         requests.post(url, json=payload, timeout=5)
     except: pass
 
-# --- SMART BROWSER SESSION (Yahoo Rate-Limit Bypass) ---
+# --- SMART BROWSER SESSION (Fast IO Bypass) ---
 session = requests.Session()
 session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'})
 
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(Multi-Horizon Calls | VIX Filter | AI Score | Smart Margin | Auto-Pilot | Telegram)**")
+st.markdown("**(Fast Engine ⚡ | Multi-Horizon | AI Score | Smart Margin | Auto-Pilot | Telegram)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
 
@@ -75,7 +75,7 @@ def load_symbols():
         st.error(f"❌ File Load Error: {e}")
     return symbols
 
-# --- PORTFOLIO DATABASE & TELEGRAM ALERTS ---
+# --- PORTFOLIO & TELEGRAM ALERTS ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
         return pd.read_csv(PORTFOLIO_FILE)
@@ -103,8 +103,7 @@ def save_to_portfolio(new_trades):
             })
             active_trades += 1
             
-            # Send Telegram Alert for NEW CALL
-            msg = f"🚨 NEW {t['Horizon'].upper()} CALL!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty to Buy: {t['Qty']}"
+            msg = f"🚨 NEW {t['Horizon'].upper()} CALL!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty: {t['Qty']}"
             send_telegram_alert(msg)
             
     if new_rows:
@@ -119,7 +118,6 @@ def update_scorecard():
     for index, row in df.iterrows():
         if row['Status'] == "Active ⏳":
             try:
-                # Intraday check 5m, Long term check 1d
                 check_interval = "5m" if "Intraday" in row['Horizon'] else "1d"
                 data = yf.Ticker(f"{row['Stock']}.NS", session=session).history(period="5d", interval=check_interval)
                 if data.empty: continue
@@ -131,7 +129,6 @@ def update_scorecard():
                 entry = float(row['Entry'])
                 tgt = float(row['Target'])
                 sl = float(row['SL'])
-                
                 turnover_buy = qty * entry
                 
                 if "BUY" in row['Action']:
@@ -144,7 +141,7 @@ def update_scorecard():
                         df.at[index, 'Net P&L'] = net_profit
                         df.at[index, 'Status'] = "Target Hit 🎯"
                         
-                        msg = f"🎯 {row['Horizon']} TARGET HIT! 🥳\n📈 Stock: {row['Stock']}\n💰 Net Profit: ₹{net_profit}\n🚀 Level Reached: ₹{tgt}\n✅ Safely Booked!"
+                        msg = f"🎯 {row['Horizon']} TARGET HIT! 🥳\n📈 Stock: {row['Stock']}\n💰 Net Profit: ₹{net_profit}\n🚀 Level: ₹{tgt}\n✅ Safely Booked!"
                         send_telegram_alert(msg)
                         
                     elif low_today <= sl: 
@@ -156,13 +153,13 @@ def update_scorecard():
                         df.at[index, 'Net P&L'] = net_loss
                         df.at[index, 'Status'] = "SL Hit 🛑"
                         
-                        msg = f"🛑 {row['Horizon']} STOPLOSS HIT\n📈 Stock: {row['Stock']}\n💔 Net Loss: ₹{net_loss}\n📉 Level Broken: ₹{sl}"
+                        msg = f"🛑 {row['Horizon']} STOPLOSS HIT\n📈 Stock: {row['Stock']}\n💔 Net Loss: ₹{net_loss}\n📉 Level: ₹{sl}"
                         send_telegram_alert(msg)
             except: pass
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
-# --- THE MEGA WORKER ROBOT (Multi-Horizon Engine) ---
+# --- FAST WORKER ROBOT (Early Exit Logic) ---
 def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choice):
     found_trades = []
     
@@ -170,31 +167,63 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
         if idx % 50 == 0: gc.collect()
         
         try:
-            time.sleep(random.uniform(0.2, 0.6)) 
+            time.sleep(0.01) # Ultra-fast scanning minimal delay
             
+            # Setup Timeframes
             if "Intraday" in horizon_choice:
-                data = yf.Ticker(ticker, session=session).history(period="15d", interval="15m")
+                ltf_p, ltf_i = "5d", "15m"  # Reduced data size for fast fetch
+                htf_p, htf_i = "1mo", "1d"
                 tgt_m, sl_m = 3.5, 1.5
             elif "Short-Term" in horizon_choice:
-                data = yf.Ticker(ticker, session=session).history(period="6mo", interval="1d")
+                ltf_p, ltf_i = "6mo", "1d"
+                htf_p, htf_i = "1y", "1wk"
                 tgt_m, sl_m = 4.0, 2.0
             elif "Mid-Term" in horizon_choice:
-                data = yf.Ticker(ticker, session=session).history(period="2y", interval="1wk")
+                ltf_p, ltf_i = "2y", "1wk"
+                htf_p, htf_i = "5y", "1mo"
                 tgt_m, sl_m = 5.0, 2.0
             else: 
-                data = yf.Ticker(ticker, session=session).history(period="5y", interval="1mo")
+                ltf_p, ltf_i = "5y", "1mo"
+                htf_p, htf_i = None, None
                 tgt_m, sl_m = 8.0, 2.0
+
+            tkr = yf.Ticker(ticker, session=session)
+
+            # 1. SMART EARLY EXIT (Check Higher Timeframe First to save 70% downloading time)
+            htf_trend_up = True
+            gap_pct = 0.0
+            avg_daily_vol = 0
+            
+            if htf_p:
+                data_htf = tkr.history(period=htf_p, interval=htf_i)
+                if len(data_htf) < 22: continue
                 
+                htf_ema_9 = data_htf['Close'].ewm(span=9).mean().iloc[-2]
+                htf_ema_21 = data_htf['Close'].ewm(span=21).mean().iloc[-2]
+                htf_trend_up = htf_ema_9 > htf_ema_21
+                
+                # Agar Nifty Bearish hai aur HTF bhi Bearish hai, toh lower chart download hi mat karo!
+                if not is_nifty_bullish and not htf_trend_up: continue
+                
+                # Check Daily Volume for Intraday BEFORE downloading 15m data
+                if "Intraday" in horizon_choice:
+                    avg_daily_vol = data_htf['Volume'].rolling(10).mean().iloc[-2]
+                    if avg_daily_vol < 500000: continue
+                
+                # Gap Check
+                prev_close = data_htf['Close'].iloc[-2]
+                curr_open = data_htf['Open'].iloc[-1]
+                if prev_close > 0:
+                    gap_pct = abs((curr_open - prev_close) / prev_close) * 100
+                    if gap_pct > 3.0: continue
+
+            # 2. FETCH LOWER TIMEFRAME (Only for passing stocks)
+            data = tkr.history(period=ltf_p, interval=ltf_i)
             if len(data) < 30: continue
             data.dropna(inplace=True)
-
+            
             live_close = data['Close'].iloc[-1]
             if live_close < 50: continue 
-
-            prev_close = data['Close'].iloc[-2]
-            curr_open = data['Open'].iloc[-1]
-            gap_pct = abs((curr_open - prev_close) / prev_close) * 100
-            if gap_pct > 3.0: continue
 
             closed_close = data['Close'].iloc[-2]
             closed_vol = data['Volume'].iloc[-2]
@@ -203,16 +232,16 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
             ema_21 = data['Close'].ewm(span=21).mean().iloc[-2]
             rsi_14 = calculate_rsi(data).iloc[-2]
 
-            avg_vol_20 = data['Volume'].rolling(window=20).mean().iloc[-3]
+            avg_vol_20 = data['Volume'].rolling(20).mean().iloc[-3]
             if pd.isna(avg_vol_20) or avg_vol_20 <= 0: avg_vol_20 = 1 
             whale_spike = closed_vol > (avg_vol_20 * 1.5)
             
-            avg_range = (data['High'] - data['Low']).rolling(window=14).mean().iloc[-2]
+            avg_range = (data['High'] - data['Low']).rolling(14).mean().iloc[-2]
             atr = avg_range if avg_range > 0.5 else 1.0 
 
             bullish = False
             if ("Long-Term" in horizon_choice or "Mid-Term" in horizon_choice) or is_nifty_bullish:
-                bullish = (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
+                bullish = htf_trend_up and (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
             
             if bullish:
                 stock_name = ticker.replace(".NS", "")
@@ -281,8 +310,7 @@ with tab1:
             n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
             n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
             is_nifty_bullish = n_ema9 > n_ema21
-    except Exception:
-        pass
+    except Exception: pass
         
     if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
     else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active)")
@@ -315,10 +343,10 @@ with tab1:
                 st.rerun()
             
         else:
-            st.info("💡 Reduced server load (5 Workers) to prevent Streamlit Throttling. Scanning will be safe & steady.")
+            st.info("⚡ Fast Engine Activated (Early Exit Enabled). Running 12 Squads...")
             my_bar = st.progress(0, text=f"Deploying AI Squads for {horizon_mode}... Please wait.")
             
-            num_workers = 5 
+            num_workers = 12 # INCREASED FOR FAST SCANNING WITHOUT CRASH
             chunk_size = len(all_tickers) // num_workers + 1
             squads = [all_tickers[i:i + chunk_size] for i in range(0, len(all_tickers), chunk_size)]
             
