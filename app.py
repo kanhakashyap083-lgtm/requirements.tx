@@ -66,16 +66,16 @@ def worker_robot(tickers):
 
             if bullish or bearish:
                 stock_name = ticker.replace(".NS", "")
-                action = "🟢 BUY" if bullish else "🔴 SELL"
+                action = "🟢 BUY (Up)" if bullish else "🔴 SELL (Down)"
                 tgt = live_close + (atr * 3) if bullish else live_close - (atr * 3)
                 sl = live_close - (atr * 1.5) if bullish else live_close + (atr * 1.5)
                 
                 found_trades.append({
-                    "Stock": stock_name,
-                    "Action": action,
-                    "Live Entry": round(live_close, 2),
-                    "Target 🎯": round(tgt, 2),
-                    "Stoploss 🛑": round(sl, 2)
+                    "Stock Symbol": stock_name,
+                    "Signal": action,
+                    "Live Price (₹)": round(live_close, 2),
+                    "Target 🎯 (₹)": round(tgt, 2),
+                    "Stoploss 🛑 (₹)": round(sl, 2)
                 })
         except Exception as e:
             pass
@@ -113,7 +113,7 @@ if st.button("🔥 FIRE MEGA SCANNER", use_container_width=True):
         my_bar.empty()
         
         if all_results:
-            st.success(f"🎉 Scan Complete in {round(end_time - start_time, 1)} seconds!")
+            st.success(f"🎉 Scan Complete in {round(end_time - start_time, 1)} seconds! See Live Scores below:")
             st.dataframe(pd.DataFrame(all_results), use_container_width=True)
         else:
             st.warning("Scan Complete. No strict operator breakouts found right now.")
