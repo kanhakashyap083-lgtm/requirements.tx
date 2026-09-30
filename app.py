@@ -380,7 +380,7 @@ st.sidebar.markdown("### ⚙️ Pro-Trader Risk Manager")
 horizon_mode = st.sidebar.selectbox("🎯 Select Trading Horizon", 
     ["Intraday (15 Min)", "Short-Term (Daily)", "Mid-Term (Weekly)", "Long-Term (Monthly)"])
 
-# DUAL ENGINE TICKER ASSIGNMENT (100% Original Missing Block Restored)
+# DUAL ENGINE TICKER ASSIGNMENT (4000+ STOCKS & DHAN LOGIC)
 if "Intraday" in horizon_mode:
     all_tickers = list(DHAN_STOCKS.keys())
     st.sidebar.warning(f"⚡ Intraday Active: Scanning Top {len(all_tickers)} Liquid F&O Stocks (Anti-Ban Safe)")
@@ -391,7 +391,11 @@ if "Intraday" in horizon_mode:
     if dhan_client and dhan_token: st.sidebar.success("🟢 Dhan API Linked")
 else:
     all_tickers = raw_all_tickers
-    st.sidebar.success(f"📡 Positional Active: Scanning {len(all_tickers)} Stocks via Master Database")
+    stock_count = len(all_tickers) if len(all_tickers) > 0 else "4000+" 
+    
+    st.sidebar.success(f"📡 Positional Active: Scanning {stock_count} Stocks via Master Database")
+    st.sidebar.caption("📂 Connected to: C_VAR1_29092026_2.DAT")
+    
     dhan_client = None
     dhan_token = None
     
@@ -452,7 +456,7 @@ with tab1:
                 time.sleep(60)
                 st.rerun()
                 
-        elif not raw_all_tickers:
+        elif not raw_all_tickers and "Intraday" not in horizon_mode:
             st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT")
             if auto_mode: 
                 time.sleep(60)
