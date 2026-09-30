@@ -31,9 +31,25 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(Fast Engine ⚡ | Multi-Index Weather | AI Score | Smart Margin | Auto-Pilot)**")
+st.markdown("**(Dual Engine ⚡ | Multi-Index Weather | AI Score | Smart Margin | Auto-Pilot)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
+
+# --- TOP F&O STOCKS FOR INTRADAY (DHAN API ZERO-DELAY) ---
+DHAN_STOCKS = {
+    "RELIANCE.NS": {"id": "2885", "exch": "NSE_EQ"},
+    "HDFCBANK.NS": {"id": "1333", "exch": "NSE_EQ"},
+    "INFY.NS": {"id": "1594", "exch": "NSE_EQ"},
+    "ICICIBANK.NS": {"id": "4963", "exch": "NSE_EQ"},
+    "SBIN.NS": {"id": "4329", "exch": "NSE_EQ"},
+    "TCS.NS": {"id": "11536", "exch": "NSE_EQ"},
+    "ITC.NS": {"id": "1660", "exch": "NSE_EQ"},
+    "LT.NS": {"id": "11483", "exch": "NSE_EQ"},
+    "AXISBANK.NS": {"id": "5900", "exch": "NSE_EQ"},
+    "KOTAKBANK.NS": {"id": "1922", "exch": "NSE_EQ"},
+    "TATAMOTORS.NS": {"id": "3456", "exch": "NSE_EQ"},
+    "BHARTIARTL.NS": {"id": "10604", "exch": "NSE_EQ"}
+}
 
 # --- HELPER FUNCTIONS ---
 def get_ist_time():
@@ -65,6 +81,34 @@ def check_index_trend(ticker, interval):
             return ema9 > ema21
     except: pass
     return True # Default safe mode agar Yahoo fail ho
+
+# --- LIVE DHAN DATA MATCHER (NEW ENGINE) ---
+def fetch_dhan_ltf(ticker, client_id, token, interval_mins):
+    info = DHAN_STOCKS.get(ticker)
+    if not info: return pd.DataFrame()
+    try:
+        url = "https://api.dhan.co/v2/charts/intraday"
+        now = get_ist_time()
+        past = now - datetime.timedelta(days=5) 
+        payload = {
+            "securityId": info["id"],
+            "exchangeSegment": info["exch"],
+            "instrument": "EQUITY",
+            "interval": str(interval_mins).replace("m", ""),
+            "fromDate": past.strftime("%Y-%m-%d"),
+            "toDate": now.strftime("%Y-%m-%d")
+        }
+        headers = {"access-token": token, "client-id": client_id, "Content-Type": "application/json"}
+        resp = requests.post(url, json=payload, headers=headers, timeout=5).json()
+        if resp.get("status") == "success" and "data" in resp:
+            d = resp["data"]
+            df = pd.DataFrame({
+                "Open": d.get("open", []), "High": d.get("high", []), "Low": d.get("low", []),
+                "Close": d.get("close", []), "Volume": d.get("volume", [])
+            })
+            return df
+    except: pass
+    return pd.DataFrame()
 
 # --- LOAD NSE STOCKS ---
 @st.cache_data
@@ -113,7 +157,7 @@ def save_to_portfolio(new_trades):
             })
             active_trades += 1
             
-            msg = f"🚨 NEW {t['Horizon'].upper()} CALL!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty: {t['Qty']}"
+            msg = f"🚨 NEW {t['Horizon'].upper()} CALL!\n📈 Stock: {t['Stock']}\n🤖 AI Score: {t['AI Score']}\n🎯 Action: {t['Action']}\n💰 Entry: ₹{t['Entry']}\n🏆 Target: ₹{t['Target']}\n🛑 SL: ₹{t['SL']}\n📦 Qty: {t['Qty']}\n📡 Feed: {t['Feed']}"
             send_telegram_alert(msg)
             
     if new_rows:
@@ -169,8 +213,8 @@ def update_scorecard():
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
-# --- FAST WORKER ROBOT (Early Exit Logic) ---
-def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choice):
+# --- FAST WORKER ROBOT (DUAL ENGINE LOGIC) ---
+def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choice, d_client_id=None, d_token=None):
     found_trades = []
     
     for idx, ticker in enumerate(tickers):
@@ -201,6 +245,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choi
             gap_pct = 0.0
             avg_daily_vol = 0
             
+            # HTF Data (Always Yahoo, prevents Dhan API block)
             if htf_p:
                 data_htf = tkr.history(period=htf_p, interval=htf_i)
                 if len(data_htf) < 22: continue
@@ -209,7 +254,6 @@ def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choi
                 htf_ema_21 = data_htf['Close'].ewm(span=21).mean().iloc[-2]
                 htf_trend_up = htf_ema_9 > htf_ema_21
                 
-                # Agar teeno (Nifty, BankNifty, Sensex) Bearish hain, aur stock ka HTF bhi Bearish hai, toh reject!
                 if not is_market_bullish and not htf_trend_up: continue
                 
                 if "Intraday" in horizon_choice:
@@ -222,7 +266,15 @@ def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choi
                     gap_pct = abs((curr_open - prev_close) / prev_close) * 100
                     if gap_pct > 3.0: continue
 
-            data = tkr.history(period=ltf_p, interval=ltf_i)
+            # LTF Data (Dual Engine Core)
+            source_feed = "Yahoo 📡"
+            if "Intraday" in horizon_choice and d_client_id and d_token:
+                data = fetch_dhan_ltf(ticker, d_client_id, d_token, ltf_i)
+                if not data.empty: source_feed = "DhanHQ ⚡"
+                else: data = tkr.history(period=ltf_p, interval=ltf_i)
+            else:
+                data = tkr.history(period=ltf_p, interval=ltf_i)
+
             if len(data) < 30: continue
             data.dropna(inplace=True)
             
@@ -276,7 +328,8 @@ def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choi
                     "Qty": ideal_qty,
                     "Entry": round(live_close, 2),
                     "Target": round(tgt, 2),
-                    "SL": round(sl, 2)
+                    "SL": round(sl, 2),
+                    "Feed": source_feed
                 })
         except: pass
     return found_trades
@@ -284,13 +337,29 @@ def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choi
 # --- UI DASHBOARD ---
 tab1, tab2 = st.tabs(["🚀 Control Center & Scanner", "📈 Real Net Scorecard"])
 
-all_tickers = load_symbols()
+raw_all_tickers = load_symbols()
 vix_val = get_vix()
 
 st.sidebar.markdown("### ⚙️ Pro-Trader Risk Manager")
 horizon_mode = st.sidebar.selectbox("🎯 Select Trading Horizon", 
     ["Intraday (15 Min)", "Short-Term (Daily)", "Mid-Term (Weekly)", "Long-Term (Monthly)"])
+
+# DUAL ENGINE TICKER ASSIGNMENT
+if "Intraday" in horizon_mode:
+    all_tickers = list(DHAN_STOCKS.keys())
+    st.sidebar.warning(f"⚡ Intraday Active: Scanning Top {len(all_tickers)} Liquid F&O Stocks (Anti-Ban Safe)")
     
+    st.sidebar.markdown("### 🔑 DhanHQ Live Connection")
+    dhan_client = st.sidebar.text_input("Dhan Client ID", type="password", help="Needed for Live Intraday Data")
+    dhan_token = st.sidebar.text_input("Access Token", type="password")
+    if dhan_client and dhan_token: st.sidebar.success("🟢 Dhan API Linked")
+else:
+    all_tickers = raw_all_tickers
+    st.sidebar.success(f"📡 Positional Active: Scanning {len(all_tickers)} Stocks via Master Database")
+    dhan_client = None
+    dhan_token = None
+    
+st.sidebar.markdown("---")
 capital = st.sidebar.number_input("Total Trading Capital (₹)", min_value=10000, value=50000, step=5000)
 risk = st.sidebar.number_input("Risk Per Trade (₹)", min_value=500, value=1000, step=500)
 st.session_state['max_trades'] = st.sidebar.number_input("Max Calls allowed per scan", min_value=1, value=5)
@@ -300,8 +369,6 @@ st.sidebar.info(f"📊 **India VIX:** {vix_val}")
 if vix_val > 24: st.sidebar.error("⚠️ VIX is too High! Extreme Panic Market.")
 elif vix_val < 10: st.sidebar.warning("⚠️ VIX is too Low! Dead Market.")
 else: st.sidebar.success("🟢 VIX is Optimal. Safe to Trade.")
-
-st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
 
 with tab1:
     st.subheader(f"Multi-Index Weather System: {horizon_mode}")
@@ -345,29 +412,29 @@ with tab1:
                 time.sleep(60)
                 st.rerun()
                 
-        elif not all_tickers:
+        elif not raw_all_tickers:
             st.error("No Database Found! Please upload C_VAR1_29092026_2.DAT")
             if auto_mode: 
                 time.sleep(60)
                 st.rerun()
             
         else:
-            st.info("⚡ Fast Engine Activated. Running 12 AI Squads...")
+            st.info("⚡ Fast Engine Activated. Running AI Squads...")
             my_bar = st.progress(0, text=f"Deploying AI Squads for {horizon_mode}... Please wait.")
             
-            num_workers = 12 
+            num_workers = 12 if not "Intraday" in horizon_mode else 4 # Kam workers intraday ke liye taaki API block na ho
             chunk_size = len(all_tickers) // num_workers + 1
             squads = [all_tickers[i:i + chunk_size] for i in range(0, len(all_tickers), chunk_size)]
             
             all_results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_market_bullish, horizon_mode) for i in range(len(squads))]
+                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_market_bullish, horizon_mode, dhan_client, dhan_token) for i in range(len(squads))]
                 completed = 0
                 for future in concurrent.futures.as_completed(futures):
                     res = future.result()
                     if res: all_results.extend(res)
                     completed += 1
-                    my_bar.progress(int((completed / num_workers) * 100), text=f"AI Deep Scanning... {int((completed / num_workers) * 100)}% completed")
+                    my_bar.progress(int((completed / len(squads)) * 100), text=f"AI Deep Scanning... {int((completed / len(squads)) * 100)}% completed")
 
             my_bar.empty()
             if all_results:
