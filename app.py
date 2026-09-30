@@ -31,7 +31,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP ---
 st.set_page_config(page_title="Institutional Mega Algo", page_icon="🚀", layout="wide")
 st.title("🚀 Institutional Mega Algo & Scorecard")
-st.markdown("**(Fast Engine ⚡ | Multi-Horizon | AI Score | Smart Margin | Auto-Pilot | Telegram)**")
+st.markdown("**(Fast Engine ⚡ | Multi-Index Weather | AI Score | Smart Margin | Auto-Pilot)**")
 
 PORTFOLIO_FILE = "live_portfolio.csv"
 
@@ -55,6 +55,16 @@ def calculate_rsi(data, period=14):
     ema_down = down.ewm(com=period-1, adjust=False).mean()
     rs = ema_up / ema_down
     return 100 - (100 / (1 + rs))
+
+def check_index_trend(ticker, interval):
+    try:
+        data = yf.Ticker(ticker, session=session).history(period="6mo", interval=interval)
+        if not data.empty and len(data) > 20:
+            ema9 = data['Close'].ewm(span=9).mean().iloc[-1]
+            ema21 = data['Close'].ewm(span=21).mean().iloc[-1]
+            return ema9 > ema21
+    except: pass
+    return True # Default safe mode agar Yahoo fail ho
 
 # --- LOAD NSE STOCKS ---
 @st.cache_data
@@ -160,18 +170,17 @@ def update_scorecard():
     return df
 
 # --- FAST WORKER ROBOT (Early Exit Logic) ---
-def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choice):
+def worker_robot(tickers, risk_amt, capital_amt, is_market_bullish, horizon_choice):
     found_trades = []
     
     for idx, ticker in enumerate(tickers):
         if idx % 50 == 0: gc.collect()
         
         try:
-            time.sleep(0.01) # Ultra-fast scanning minimal delay
+            time.sleep(0.01) 
             
-            # Setup Timeframes
             if "Intraday" in horizon_choice:
-                ltf_p, ltf_i = "5d", "15m"  # Reduced data size for fast fetch
+                ltf_p, ltf_i = "5d", "15m"  
                 htf_p, htf_i = "1mo", "1d"
                 tgt_m, sl_m = 3.5, 1.5
             elif "Short-Term" in horizon_choice:
@@ -188,8 +197,6 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
                 tgt_m, sl_m = 8.0, 2.0
 
             tkr = yf.Ticker(ticker, session=session)
-
-            # 1. SMART EARLY EXIT (Check Higher Timeframe First to save 70% downloading time)
             htf_trend_up = True
             gap_pct = 0.0
             avg_daily_vol = 0
@@ -202,22 +209,19 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
                 htf_ema_21 = data_htf['Close'].ewm(span=21).mean().iloc[-2]
                 htf_trend_up = htf_ema_9 > htf_ema_21
                 
-                # Agar Nifty Bearish hai aur HTF bhi Bearish hai, toh lower chart download hi mat karo!
-                if not is_nifty_bullish and not htf_trend_up: continue
+                # Agar teeno (Nifty, BankNifty, Sensex) Bearish hain, aur stock ka HTF bhi Bearish hai, toh reject!
+                if not is_market_bullish and not htf_trend_up: continue
                 
-                # Check Daily Volume for Intraday BEFORE downloading 15m data
                 if "Intraday" in horizon_choice:
                     avg_daily_vol = data_htf['Volume'].rolling(10).mean().iloc[-2]
                     if avg_daily_vol < 500000: continue
                 
-                # Gap Check
                 prev_close = data_htf['Close'].iloc[-2]
                 curr_open = data_htf['Open'].iloc[-1]
                 if prev_close > 0:
                     gap_pct = abs((curr_open - prev_close) / prev_close) * 100
                     if gap_pct > 3.0: continue
 
-            # 2. FETCH LOWER TIMEFRAME (Only for passing stocks)
             data = tkr.history(period=ltf_p, interval=ltf_i)
             if len(data) < 30: continue
             data.dropna(inplace=True)
@@ -240,7 +244,7 @@ def worker_robot(tickers, risk_amt, capital_amt, is_nifty_bullish, horizon_choic
             atr = avg_range if avg_range > 0.5 else 1.0 
 
             bullish = False
-            if ("Long-Term" in horizon_choice or "Mid-Term" in horizon_choice) or is_nifty_bullish:
+            if ("Long-Term" in horizon_choice or "Mid-Term" in horizon_choice) or is_market_bullish:
                 bullish = htf_trend_up and (closed_close > ema_9) and (ema_9 > ema_21) and (rsi_14 > 60) and whale_spike
             
             if bullish:
@@ -300,20 +304,25 @@ else: st.sidebar.success("🟢 VIX is Optimal. Safe to Trade.")
 st.sidebar.success(f"✅ Master Database: {len(all_tickers)} Stocks Loaded.")
 
 with tab1:
-    st.subheader(f"Multi-Horizon Engine: {horizon_mode}")
+    st.subheader(f"Multi-Index Weather System: {horizon_mode}")
     
-    is_nifty_bullish = True 
-    try:
-        nifty_int = "1d" if "Intraday" in horizon_mode else "1wk"
-        nifty_data = yf.Ticker("^NSEI", session=session).history(period="6mo", interval=nifty_int)
-        if not nifty_data.empty and len(nifty_data) > 20:
-            n_ema9 = nifty_data['Close'].ewm(span=9).mean().iloc[-1]
-            n_ema21 = nifty_data['Close'].ewm(span=21).mean().iloc[-1]
-            is_nifty_bullish = n_ema9 > n_ema21
-    except Exception: pass
-        
-    if is_nifty_bullish: st.success("📈 NIFTY 50 Trend: BULLISH (Safe to BUY)")
-    else: st.error("📉 NIFTY 50 Trend: BEARISH (Strict MTFA Active)")
+    nifty_int = "1d" if "Intraday" in horizon_mode else "1wk"
+    
+    nifty_bullish = check_index_trend("^NSEI", nifty_int)
+    banknifty_bullish = check_index_trend("^NSEBANK", nifty_int)
+    sensex_bullish = check_index_trend("^BSESN", nifty_int)
+    
+    is_market_bullish = nifty_bullish or banknifty_bullish or sensex_bullish
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("NIFTY 50", "📈 BULLISH" if nifty_bullish else "📉 BEARISH")
+    col2.metric("BANKNIFTY", "📈 BULLISH" if banknifty_bullish else "📉 BEARISH")
+    col3.metric("SENSEX", "📈 BULLISH" if sensex_bullish else "📉 BEARISH")
+    
+    if is_market_bullish:
+        st.success("🟢 Overall Market Mood: BULLISH / MIXED (Safe to Trade - Strict MTFA Relaxed)")
+    else:
+        st.error("🔴 Overall Market Mood: BEARISH (All Indices Down - Strict MTFA Active)")
     
     st.markdown("---")
     auto_mode = st.checkbox("🤖 ENABLE AUTO-PILOT MODE (Scans & P&L Check every 5 Mins)", value=False)
@@ -343,16 +352,16 @@ with tab1:
                 st.rerun()
             
         else:
-            st.info("⚡ Fast Engine Activated (Early Exit Enabled). Running 12 Squads...")
+            st.info("⚡ Fast Engine Activated. Running 12 AI Squads...")
             my_bar = st.progress(0, text=f"Deploying AI Squads for {horizon_mode}... Please wait.")
             
-            num_workers = 12 # INCREASED FOR FAST SCANNING WITHOUT CRASH
+            num_workers = 12 
             chunk_size = len(all_tickers) // num_workers + 1
             squads = [all_tickers[i:i + chunk_size] for i in range(0, len(all_tickers), chunk_size)]
             
             all_results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_nifty_bullish, horizon_mode) for i in range(len(squads))]
+                futures = [executor.submit(worker_robot, squads[i], risk, capital, is_market_bullish, horizon_mode) for i in range(len(squads))]
                 completed = 0
                 for future in concurrent.futures.as_completed(futures):
                     res = future.result()
