@@ -23,6 +23,13 @@ st.markdown("""
         -webkit-text-fill-color: transparent;
         margin-bottom: 0px;
     }
+    [data-testid="stMetric"] {
+        background-color: rgba(128, 128, 128, 0.1);
+        border-radius: 12px;
+        padding: 15px 20px;
+        box-shadow: 0px 4px 15px rgba(0, 0, 0, 0.05);
+        border-left: 6px solid #00FFA3;
+    }
     .stButton > button {
         background: linear-gradient(135deg, #00FFA3 0%, #03E1FF 100%);
         color: black !important;
@@ -80,7 +87,6 @@ def calculate_rsi(series, period=14):
 
 # --- LIVE HIGH-SPEED DATA ENGINE ---
 def fetch_data(symbol, info, client_id, token):
-    # 1. First Priority: Try DhanHQ Pro API for Zero-Delay
     if client_id and token:
         try:
             url = "https://api.dhan.co/v2/charts/intraday"
@@ -102,13 +108,19 @@ def fetch_data(symbol, info, client_id, token):
                 if len(df) > 30: return df, "DhanHQ API ⚡"
         except: pass
     
-    # 2. Fallback: Yahoo Finance
     try:
         df = yf.Ticker(symbol, session=session).history(period="5d", interval="5m")
         if len(df) > 30: return df, "Yahoo (Delayed ⚠️)"
     except: pass
-    
     return None, "Offline"
+
+def get_latest_price(symbol, info, client_id, token):
+    try:
+        df, _ = fetch_data(symbol, info, client_id, token)
+        if df is not None and not df.empty:
+            return df['Close'].iloc[-1]
+    except: pass
+    return 0.0
 
 # --- THE SNIPER LOGIC ---
 def analyze_index_options(symbol, info, risk_amt, client_id, token):
@@ -150,12 +162,14 @@ def analyze_index_options(symbol, info, risk_amt, client_id, token):
             premium_risk = spot_risk * 0.5 
             risk_per_lot = premium_risk * info['lot_size']
             ideal_lots = max(1, int(risk_amt / risk_per_lot)) if risk_per_lot > 0 else 1
+            total_qty = ideal_lots * info['lot_size']
             
             return {
                 "Index": info['name'],
                 "Signal": signal,
                 "Action": action_text,
                 "Lots": f"📦 {ideal_lots} Lots",
+                "Total Qty": total_qty,
                 "Spot Price": f"₹{round(live_price, 2)}",
                 "Target": f"₹{round(tgt_spot, 2)}",
                 "SL": f"₹{round(sl_spot, 2)}",
@@ -178,12 +192,22 @@ else:
 
 st.sidebar.markdown("### ⚙️ Pro Risk Manager")
 capital = st.sidebar.number_input("Trading Capital (₹)", min_value=10000, value=50000, step=5000)
-# Risk is now strictly capped at 1% for safety
 risk_pct = st.sidebar.slider("Risk per Trade (%)", min_value=0.5, max_value=2.0, value=1.0, step=0.5)
 risk_per_trade = capital * (risk_pct / 100)
 st.sidebar.success(f"💼 Allowed Risk Per Trade: **₹{risk_per_trade}**")
 
 with tab1:
+    # 📌 TOP METRIC CARDS (Fixed & Added Back)
+    c1, c2, c3 = st.columns(3)
+    p_nifty = get_latest_price("^NSEI", INDICES["^NSEI"], d_client_id, d_token)
+    p_bank = get_latest_price("^NSEBANK", INDICES["^NSEBANK"], d_client_id, d_token)
+    p_sen = get_latest_price("^BSESN", INDICES["^BSESN"], d_client_id, d_token)
+    
+    c1.metric("📌 NIFTY 50 Spot", f"₹{round(p_nifty, 2)}" if p_nifty else "Offline")
+    c2.metric("🏦 BANKNIFTY Spot", f"₹{round(p_bank, 2)}" if p_bank else "Offline")
+    c3.metric("📊 SENSEX Spot", f"₹{round(p_sen, 2)}" if p_sen else "Offline")
+    
+    st.write("<br>", unsafe_allow_html=True)
     auto_mode = st.checkbox("🤖 ENABLE AI AUTO-PILOT (Scans silently every 2 Mins)", value=False)
     st.write("<br>", unsafe_allow_html=True)
     manual_scan = st.button("🔥 DEPLOY SNIPER SQUADS (SCAN NOW)")
@@ -212,10 +236,11 @@ with tab1:
                 st.success(f"🚨 TARGETS ACQUIRED! Found {len(results)} Explosive Breakout(s).")
                 st.dataframe(pd.DataFrame(results), use_container_width=True)
                 for res in results:
-                    msg = f"💥 {res['Action']} ALERT!\n🎯 {res['Signal']}\n{res['Lots']}\n🛡️ SL: {res['SL']}\n🚀 TGT: {res['Target']}\n📡 Source: {res['Data Feed']}"
+                    # 📌 Quantity added back in Telegram Alert
+                    msg = f"💥 {res['Action']} ALERT!\n🎯 {res['Signal']}\n{res['Lots']} (Qty: {res['Total Qty']})\n🛡️ SL: {res['SL']}\n🚀 TGT: {res['Target']}\n📡 Source: {res['Data Feed']}"
                     send_telegram_alert(msg)
             else:
-                st.info("🧘‍♂️️ Market is choppy. Zero setups found. Sniper is waiting for the perfect shot.")
+                st.info("🧘‍♂ Market is choppy. Zero setups found. Sniper is waiting for the perfect shot.")
                 
             if auto_mode:
                 time.sleep(120)
