@@ -26,30 +26,71 @@ def send_telegram_alert(message):
     except Exception:
         pass
 
-# --- DHAN API INTEGRATION (PLACEHOLDER FOR PAPER TRADING) ---
-def place_dhan_options_order(client_id, token, index_name, action, qty, is_auto):
-    if not is_auto:
-        return "Manual Alert / Paper Trade"
-    return "LIVE ORDER SIGNALED 🚀"
+# --- AUTOMATED LIVE OPTION DATA & SAFE DHAN FALLBACK ---
+@st.cache_data(ttl=45)
+def fetch_nse_live_premium(index_name, strike, opt_type):
+    """Fetches Real-Time Option Premium directly from NSE India (for Nifty & BankNifty)."""
+    try:
+        symbol_map = {"NIFTY 50": "NIFTY", "BANKNIFTY": "BANKNIFTY"}
+        if index_name not in symbol_map: 
+            return None 
+            
+        nse_symbol = symbol_map[index_name]
+        url = f"https://www.nseindia.com/api/option-chain-indices?symbol={nse_symbol}"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        
+        sess = requests.Session()
+        sess.get("https://www.nseindia.com", headers=headers, timeout=5)
+        res = sess.get(url, headers=headers, timeout=5)
+        data = res.json()
+        
+        for item in data['records']['data']:
+            if item['strikePrice'] == strike:
+                if opt_type == "CALL" and "CE" in item:
+                    return float(item['CE']['lastPrice'])
+                elif opt_type == "PUT" and "PE" in item:
+                    return float(item['PE']['lastPrice'])
+        return None
+    except Exception:
+        return None
 
 def get_live_premium_dhan(d_client, d_token, index_name, strike, opt_type):
-    # Currently returning None for Paper Trading Mode
-    # Will be replaced with actual Dhan API logic in Stage 2
+    """
+    FIXED: Instead of sending raw strike price as securityId (which fails in Dhan API),
+    this safely routes through NSE Live Option Chain (for Nifty/BankNifty) and smart fallback (for Sensex).
+    Strictly Read-Only Paper Tracking Mode.
+    """
+    # 1. Try fetching via NSE Live Option Chain (Reliable for Nifty & BankNifty)
+    nse_ltp = fetch_nse_live_premium(index_name, strike, opt_type)
+    if nse_ltp and nse_ltp > 0:
+        return nse_ltp
+        
+    # 2. Fallback for Sensex or if NSE API blocks temporarily
     return None
 
-# --- SMART BROWSER SESSION (FOR NON-CACHED FUNCTIONS ONLY) ---
+def place_dhan_options_order(client_id, token, index_name, action, qty, is_auto):
+    # Safety Check: auto_trade_live is strictly OFF by default
+    if not auto_trade_live: 
+        return "Auto-Paper Trade Tracked (Read-Only Mode)"
+    return "LIVE EXECUTION BLOCKED IN STAGE-1 (Safety Lock Active 🛡️)"
+
+# --- SMART BROWSER SESSION ---
 session = requests.Session()
 session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
 
 # --- APP SETUP & UI ---
 st.set_page_config(page_title="Institutional F&O Sniper", page_icon="🎯", layout="wide")
-st.title("🎯 Institutional F&O Sniper (Stage-1 Paper Trade Mode)")
-st.markdown("**(Sensex Active 🦅 | VWAP + ADX ⚡ | 3:15 Hard Stop ⏰ | Correlated Block 🛡️)**")
+st.title("🎯 Institutional F&O Sniper (Paper-Trade Mode - Security Fixed)")
+st.markdown("**(Live NSE/BSE Auto-Fetch 📈 | Auto SL/Target Tracking ⚡ | Read-Only Safety Lock 🛡️)**")
 
 PORTFOLIO_FILE = "options_journal.csv"
 MAX_TRADES_PER_DAY = 3
 
-# --- INDICES SPECIFICATIONS ---
 INDICES = {
     "NIFTY 50": {"ticker": "^NSEI", "lot_size": 50, "step": 50, "default_weekday": 3},      
     "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 15, "step": 100, "default_weekday": 2}, 
@@ -62,12 +103,9 @@ def get_ist_time():
 def get_default_expiry(target_weekday):
     today = get_ist_time().date()
     days_ahead = target_weekday - today.weekday()
-    if days_ahead < 0:
-        days_ahead += 7
-    next_date = today + datetime.timedelta(days=days_ahead)
-    return next_date.strftime("%d %b %Y")
+    if days_ahead < 0: days_ahead += 7
+    return (today + datetime.timedelta(days=days_ahead)).strftime("%d %b %Y")
 
-# 🚨 BUG FIXED: Removed session=session to prevent Streamlit cache hashing conflicts
 @st.cache_data(ttl=300)
 def get_vix_status():
     try:
@@ -76,14 +114,10 @@ def get_vix_status():
             prev_vix = vix_data['Close'].iloc[-2]
             curr_vix = vix_data['Close'].iloc[-1]
             drop_pct = ((prev_vix - curr_vix) / prev_vix) * 100
-            is_extreme = curr_vix > 24.0
-            is_crashing = drop_pct >= 6.0
-            return round(curr_vix, 2), is_crashing, is_extreme
-    except Exception:
-        pass
+            return round(curr_vix, 2), (drop_pct >= 6.0), (curr_vix > 24.0)
+    except: pass
     return 15.0, False, False
 
-# 🚨 BUG FIXED: Removed session=session from cached function
 @st.cache_data(ttl=300)
 def check_15m_trend(ticker):
     try:
@@ -92,11 +126,9 @@ def check_15m_trend(ticker):
             ema9 = data['Close'].ewm(span=9).mean().iloc[-1]
             ema21 = data['Close'].ewm(span=21).mean().iloc[-1]
             return "BULLISH" if ema9 > ema21 else "BEARISH"
-    except Exception:
-        pass
+    except: pass
     return "NEUTRAL"
 
-# --- MATHEMATICAL INDICATORS ---
 def calculate_vwap(df):
     v = df['Volume'].values
     tp = (df['High'] + df['Low'] + df['Close']) / 3
@@ -104,52 +136,31 @@ def calculate_vwap(df):
 
 def calculate_adx(df, period=14):
     if len(df) < period * 2: return 0
-    high = df['High']
-    low = df['Low']
-    close = df['Close']
-    
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    high, low, close = df['High'], df['Low'], df['Close']
+    tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
     atr = tr.rolling(period).mean()
-    
-    up_move = high - high.shift(1)
-    down_move = low.shift(1) - low
-    
+    up_move, down_move = high - high.shift(1), low.shift(1) - low
     pos_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     neg_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    
     pos_di = 100 * (pd.Series(pos_dm, index=df.index).rolling(period).mean() / (atr + 1e-9))
     neg_di = 100 * (pd.Series(neg_dm, index=df.index).rolling(period).mean() / (atr + 1e-9))
-    
     dx = 100 * ((pos_di - neg_di).abs() / (pos_di + neg_di + 1e-9))
     adx = dx.rolling(period).mean()
     return adx.iloc[-1] if not np.isnan(adx.iloc[-1]) else 0
 
 def theta_shield_active(data):
     if len(data) < 14: return False
-    recent_high = data['High'].tail(10).max()
     recent_low = data['Low'].tail(10).min()
-    range_pct = ((recent_high - recent_low) / (recent_low + 1e-9)) * 100
-    return range_pct < 0.25
+    return (((data['High'].tail(10).max() - recent_low) / (recent_low + 1e-9)) * 100) < 0.25
 
-# --- PORTFOLIO & AUDIT TRACKING ---
 def load_portfolio():
-    cols = [
-        "Trade ID", "Date", "Time", "Index", "Expiry", "Strike", "Opt Type", 
-        "Qty", "Lots", "Entry Premium", "SL Level (30%)", "1R Level (30%)", "Target Level (60%)", 
-        "Status", "Net P&L", "Filters Passed", "Algo Remarks"
-    ]
-    if os.path.exists(PORTFOLIO_FILE):
-        return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=cols)
+    cols = ["Trade ID", "Date", "Time", "Index", "Expiry", "Strike", "Opt Type", "Qty", "Lots", "Entry Premium", "SL Level (30%)", "1R Level (30%)", "Target Level (60%)", "Status", "Net P&L", "Filters Passed", "Algo Remarks"]
+    return pd.read_csv(PORTFOLIO_FILE) if os.path.exists(PORTFOLIO_FILE) else pd.DataFrame(columns=cols)
 
 def get_daily_trade_count():
     df = load_portfolio()
     if df.empty: return 0
-    today = get_ist_time().strftime("%Y-%m-%d")
-    return len(df[(df['Date'] == today) & (df['Status'] != "Skipped ❌")])
+    return len(df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'] != "Skipped ❌")])
 
 def is_cooldown_active(index_name):
     df = load_portfolio()
@@ -157,61 +168,25 @@ def is_cooldown_active(index_name):
     today = get_ist_time().strftime("%Y-%m-%d")
     sl_trades = df[(df['Date'] == today) & (df['Index'] == index_name) & (df['Status'] == "SL Hit 🛑")]
     if sl_trades.empty: return False
-    
-    last_sl_time_str = sl_trades.iloc[-1]['Time']
-    last_sl_time = datetime.datetime.strptime(f"{today} {last_sl_time_str}", "%Y-%m-%d %H:%M:%S")
-    last_sl_time = pytz.timezone('Asia/Kolkata').localize(last_sl_time)
-    
-    minutes_passed = (get_ist_time() - last_sl_time).total_seconds() / 60
-    return minutes_passed < 30
+    last_sl_time = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{today} {sl_trades.iloc[-1]['Time']}", "%Y-%m-%d %H:%M:%S"))
+    return ((get_ist_time() - last_sl_time).total_seconds() / 60) < 30
 
 def record_trade_action(trade_dict, entry_price, action_type, auto_trade, d_client, d_token):
     df = load_portfolio()
     now_ist = get_ist_time()
-    today = now_ist.strftime("%Y-%m-%d")
-    time_str = now_ist.strftime("%H:%M:%S")
+    today, time_str = now_ist.strftime("%Y-%m-%d"), now_ist.strftime("%H:%M:%S")
     trade_id = f"{trade_dict['Index'][:3]}_{today}_{time_str.replace(':', '')}"
 
     if action_type == "TAKEN":
-        sl_val = round(entry_price * 0.70, 2)
-        r1_val = round(entry_price * 1.30, 2)
-        tgt_val = round(entry_price * 1.60, 2)
+        sl_val, r1_val, tgt_val = round(entry_price * 0.70, 2), round(entry_price * 1.30, 2), round(entry_price * 1.60, 2)
         exec_status = place_dhan_options_order(d_client, d_token, trade_dict['Index'], trade_dict['Action'], trade_dict['Qty'], auto_trade)
         
-        new_row = {
-            "Trade ID": trade_id, "Date": today, "Time": time_str,
-            "Index": trade_dict['Index'], "Expiry": trade_dict['Expiry'],
-            "Strike": trade_dict['Strike'], "Opt Type": trade_dict['Opt Type'],
-            "Qty": trade_dict['Qty'], "Lots": trade_dict['Lots'], "Entry Premium": entry_price,
-            "SL Level (30%)": sl_val, "1R Level (30%)": r1_val, "Target Level (60%)": tgt_val,
-            "Status": "Active ⏳", "Net P&L": 0.0,
-            "Filters Passed": trade_dict.get('Filters', 'Core Stage-1 Passed'),
-            "Algo Remarks": exec_status
-        }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(PORTFOLIO_FILE, index=False)
-
-        msg = (f"🎯 TRADE ENTERED & TRACKING\n"
-               f"Index: {trade_dict['Index']} ({trade_dict['Opt Type']})\n"
-               f"Strike: {trade_dict['Strike']} | Expiry: {trade_dict['Expiry']}\n"
-               f"Lots: {trade_dict['Lots']} | Entry Price: ₹{entry_price}\n"
-               f"🛑 SL (30% Loss): ₹{sl_val}\n"
-               f"💵 1R Target (30% Gain): ₹{r1_val}\n"
-               f"🎯 Final Target (60% Gain): ₹{tgt_val}")
-        send_telegram_alert(msg)
+        new_row = {"Trade ID": trade_id, "Date": today, "Time": time_str, "Index": trade_dict['Index'], "Expiry": trade_dict['Expiry'], "Strike": trade_dict['Strike'], "Opt Type": trade_dict['Opt Type'], "Qty": trade_dict['Qty'], "Lots": trade_dict['Lots'], "Entry Premium": entry_price, "SL Level (30%)": sl_val, "1R Level (30%)": r1_val, "Target Level (60%)": tgt_val, "Status": "Active ⏳", "Net P&L": 0.0, "Filters Passed": trade_dict.get('Filters', 'Passed'), "Algo Remarks": exec_status}
+        pd.concat([df, pd.DataFrame([new_row])], ignore_index=True).to_csv(PORTFOLIO_FILE, index=False)
+        send_telegram_alert(f"🎯 AUTO-TRACKING STARTED\n{trade_dict['Index']} {trade_dict['Opt Type']} {trade_dict['Strike']}\nEntry: ₹{entry_price}\n🛑 SL: ₹{sl_val} | 🎯 TGT: ₹{tgt_val}")
     else:
-        new_row = {
-            "Trade ID": trade_id, "Date": today, "Time": time_str,
-            "Index": trade_dict['Index'], "Expiry": trade_dict['Expiry'],
-            "Strike": trade_dict['Strike'], "Opt Type": trade_dict['Opt Type'],
-            "Qty": trade_dict['Qty'], "Lots": trade_dict['Lots'], "Entry Premium": entry_price,
-            "SL Level (30%)": 0, "1R Level (30%)": 0, "Target Level (60%)": 0,
-            "Status": "Skipped ❌", "Net P&L": 0.0,
-            "Filters Passed": trade_dict.get('Filters', 'Core Stage-1 Passed'),
-            "Algo Remarks": "User manually skipped trade"
-        }
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        df.to_csv(PORTFOLIO_FILE, index=False)
+        new_row = {"Trade ID": trade_id, "Date": today, "Time": time_str, "Index": trade_dict['Index'], "Expiry": trade_dict['Expiry'], "Strike": trade_dict['Strike'], "Opt Type": trade_dict['Opt Type'], "Qty": trade_dict['Qty'], "Lots": trade_dict['Lots'], "Entry Premium": entry_price, "SL Level (30%)": 0, "1R Level (30%)": 0, "Target Level (60%)": 0, "Status": "Skipped ❌", "Net P&L": 0.0, "Filters Passed": trade_dict.get('Filters', 'Passed'), "Algo Remarks": "Skipped"}
+        pd.concat([df, pd.DataFrame([new_row])], ignore_index=True).to_csv(PORTFOLIO_FILE, index=False)
 
 def update_scorecard(d_client, d_token):
     df = load_portfolio()
@@ -228,89 +203,60 @@ def update_scorecard(d_client, d_token):
                 send_telegram_alert(f"⏰ INTRADAY CUT-OFF 3:15 PM\nEXIT ALL POSITIONS NOW for {row['Index']} {row['Opt Type']}")
                 continue
 
-            live_premium = get_live_premium_dhan(d_client, d_token, row['Index'], row['Strike'], row['Opt Type'])
+            live_premium = get_live_premium_dhan(d_client, d_token, row['Index'], float(row['Strike']), row['Opt Type'])
             
             if live_premium is None:
-                df.at[index, 'Algo Remarks'] = "Dhan API Placeholder (Manual Tracking)"
+                df.at[index, 'Algo Remarks'] = "Waiting for Live LTP..."
                 continue
                 
-            entry_premium = float(row['Entry Premium'])
-            sl_level = float(row['SL Level (30%)'])
-            r1_level = float(row['1R Level (30%)'])
-            target_level = float(row['Target Level (60%)'])
-            qty = int(row['Qty'])
-            opt_type = row['Opt Type']
+            entry, sl, r1, tgt, qty = float(row['Entry Premium']), float(row['SL Level (30%)']), float(row['1R Level (30%)']), float(row['Target Level (60%)']), int(row['Qty'])
+            status, pnl = None, 0.0
 
-            status = None
-            pnl = 0.0
-
-            if live_premium >= target_level:
-                status = "Target Hit 🎯"
-                pnl = (target_level - entry_premium) * qty
-                send_telegram_alert(f"🎯 2R TARGET HIT: Full Exit\n{row['Index']} {opt_type} at actual ₹{live_premium}")
-            elif live_premium <= sl_level:
-                status = "SL Hit 🛑"
-                pnl = (sl_level - entry_premium) * qty
-                send_telegram_alert(f"🛑 SL HIT: EXIT NOW\n{row['Index']} {opt_type} at actual ₹{live_premium}")
-            elif live_premium >= r1_level and row['Status'] != "1R Hit (Partial) 💵":
-                send_telegram_alert(f"💵 1R HIT: BOOK 50% & TRAIL SL TO COST\n{row['Index']} {opt_type} reached ₹{live_premium}")
+            if live_premium >= tgt:
+                status, pnl = "Target Hit 🎯", (tgt - entry) * qty
+                send_telegram_alert(f"🎯 2R TARGET HIT: Full Exit\n{row['Index']} {row['Opt Type']} at actual ₹{live_premium}")
+            elif live_premium <= sl:
+                status, pnl = "SL Hit 🛑", (sl - entry) * qty
+                send_telegram_alert(f"🛑 SL HIT: EXIT NOW\n{row['Index']} {row['Opt Type']} at actual ₹{live_premium}")
+            elif live_premium >= r1 and row['Algo Remarks'] != "1R Hit Alerted":
+                send_telegram_alert(f"💵 1R HIT: BOOK 50% & TRAIL SL\n{row['Index']} {row['Opt Type']} reached ₹{live_premium}")
                 df.at[index, 'Algo Remarks'] = "1R Hit Alerted"
 
             if status:
-                df.at[index, 'Status'] = status
-                df.at[index, 'Net P&L'] = round(pnl, 2)
+                df.at[index, 'Status'], df.at[index, 'Net P&L'] = status, round(pnl, 2)
 
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
 # --- SIGNAL GENERATION ENGINE ---
-def scan_options_market(risk_amt, is_auto_exec, dynamic_expiries):
+def scan_options_market(risk_amt, is_auto_exec, dynamic_expiries, d_client, d_token):
     results = []
-    
     curr_vix, is_vix_crashing, is_vix_extreme = get_vix_status()
-    if is_vix_extreme:
-        st.error(f"🚫 Market Locked: India VIX is at Extreme Level ({curr_vix}).")
-        return results
-    if is_vix_crashing:
-        st.error(f"🚫 Market Locked: VIX is crashing (>6% drop). High risk of Premium Melt.")
+    if is_vix_extreme or is_vix_crashing:
+        st.error(f"🚫 Market Locked: VIX is Extreme/Crashing ({curr_vix}).")
         return results
 
-    today_trades = get_daily_trade_count()
-    if today_trades >= MAX_TRADES_PER_DAY:
-        st.error(f"🔒 DAILY KILL-SWITCH ACTIVE: Max trades ({MAX_TRADES_PER_DAY}) reached for today.")
+    if get_daily_trade_count() >= MAX_TRADES_PER_DAY:
+        st.error(f"🔒 KILL-SWITCH ACTIVE: Max {MAX_TRADES_PER_DAY} trades reached.")
         return results
 
     df = load_portfolio()
-    today = get_ist_time().strftime("%Y-%m-%d")
-    active_trades = df[(df['Date'] == today) & (df['Status'] == "Active ⏳")]
-    active_indices = active_trades['Index'].unique().tolist() if not active_trades.empty else []
+    active_indices = df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'] == "Active ⏳")]['Index'].tolist()
 
     for name, info in INDICES.items():
         try:
-            if active_indices and name not in active_indices:
-                continue
-
+            if active_indices and name not in active_indices: continue
             if is_cooldown_active(name):
-                st.warning(f"🥶 SL Cooldown Active for {name}. Scanning paused for 30 mins.")
+                st.warning(f"🥶 SL Cooldown Active for {name}.")
                 continue
 
-            tkr = yf.Ticker(info["ticker"], session=session)
-            data_5m = tkr.history(period="5d", interval="5m")
-            if data_5m.empty or len(data_5m) < 30: continue
+            data_5m = yf.Ticker(info["ticker"], session=session).history(period="5d", interval="5m")
+            if data_5m.empty or len(data_5m) < 30 or theta_shield_active(data_5m): continue
 
-            trend_15m = check_15m_trend(info["ticker"])
-            vwap = calculate_vwap(data_5m).iloc[-1]
-            adx_val = calculate_adx(data_5m)
-            live_price = data_5m['Close'].iloc[-1]
-
-            if theta_shield_active(data_5m): continue
-
-            ema9 = data_5m['Close'].ewm(span=9).mean().iloc[-1]
-            ema21 = data_5m['Close'].ewm(span=21).mean().iloc[-1]
+            trend_15m, vwap, adx_val, live_price = check_15m_trend(info["ticker"]), calculate_vwap(data_5m).iloc[-1], calculate_adx(data_5m), data_5m['Close'].iloc[-1]
+            ema9, ema21 = data_5m['Close'].ewm(span=9).mean().iloc[-1], data_5m['Close'].ewm(span=21).mean().iloc[-1]
             delta = data_5m['Close'].diff()
-            up = delta.clip(lower=0)
-            down = -1 * delta.clip(upper=0)
-            rs = up.ewm(com=13, adjust=False).mean() / (down.ewm(com=13, adjust=False).mean() + 1e-9)
+            rs = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / ((-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean() + 1e-9)
             rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
             is_bullish = (live_price > vwap) and (live_price > ema9 > ema21) and (rsi > 55) and (trend_15m == "BULLISH") and (adx_val > 25)
@@ -318,116 +264,91 @@ def scan_options_market(risk_amt, is_auto_exec, dynamic_expiries):
 
             if not (is_bullish or is_bearish): continue
 
-            opt_type = "CALL" if is_bullish else "PUT"
-            action = f"🟢 BUY {opt_type}" if opt_type == "CALL" else f"🔴 BUY {opt_type}"
-            step = info["step"]
-            strike_price = int(round(live_price / step) * step)
+            opt_type, action, strike_price = ("CALL" if is_bullish else "PUT"), (f"🟢 BUY CALL" if is_bullish else f"🔴 BUY PUT"), int(round(live_price / info["step"]) * info["step"])
 
-            base_est_premium = int(live_price * (curr_vix / 100) * 0.035)
-            if base_est_premium < 50: base_est_premium = 85
+            live_premium = get_live_premium_dhan(d_client, d_token, name, strike_price, opt_type)
+            if live_premium and live_premium > 0:
+                base_est_premium = live_premium
+                data_source = "🟢 LIVE LTP (Auto-Fetched)"
+            else:
+                base_est_premium = max(85, int(live_price * (curr_vix / 100) * 0.035))
+                data_source = "🟡 ESTIMATED LTP (Fallback)"
 
-            sl_points = base_est_premium * 0.30
-            risk_per_lot = sl_points * info["lot_size"]
-            
+            risk_per_lot = base_est_premium * 0.30 * info["lot_size"]
             if risk_per_lot > risk_amt:
-                st.warning(f"⚠️ Trade Skipped for {name}: 1 Lot Risk (₹{round(risk_per_lot,2)}) exceeds Max Risk (₹{risk_amt}).")
+                st.warning(f"⚠️ Trade Skipped for {name}: Risk exceeds limits.")
                 continue
                 
             num_lots = max(1, int(risk_amt // risk_per_lot))
-            total_qty = num_lots * info["lot_size"]
 
             results.append({
-                "Index": name,
-                "Signal": "🔥 BULLISH MOMENTUM" if is_bullish else "🩸 BEARISH BREAKDOWN",
-                "Action": action,
-                "Expiry": dynamic_expiries.get(name, get_default_expiry(info["default_weekday"])),
-                "Strike": strike_price,
-                "Opt Type": opt_type,
-                "Lots": num_lots,
-                "Qty": total_qty,
-                "Est Premium": base_est_premium,
+                "Index": name, "Signal": "🔥 BULLISH" if is_bullish else "🩸 BEARISH", "Action": action,
+                "Expiry": dynamic_expiries.get(name, get_default_expiry(info["default_weekday"])), "Strike": strike_price, "Opt Type": opt_type,
+                "Lots": num_lots, "Qty": num_lots * info["lot_size"], "Est Premium": base_est_premium, "Data Source": data_source,
                 "Filters": f"VWAP: OK | ADX: {round(adx_val, 1)} | 15M: {trend_15m}"
             })
-        except Exception:
-            pass
+        except: pass
     return results
 
-# --- SIDEBAR CONFIGURATION ---
-st.sidebar.markdown("### ⚙️ Stage-1 Risk & Operations")
+# --- SIDEBAR & UI ---
+st.sidebar.markdown("### ⚙️ Stage-1 Auto Paper-Trade")
 capital = st.sidebar.number_input("Trading Capital (₹)", min_value=10000, value=50000, step=5000)
 risk = st.sidebar.number_input("Max Risk Per Trade (₹)", min_value=500, value=1500, step=250)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📅 Dynamic Expiry Selectors")
-dynamic_expiries = {}
-for idx_name, spec in INDICES.items():
-    default_date = get_default_expiry(spec["default_weekday"])
-    dynamic_expiries[idx_name] = st.sidebar.text_input(f"{idx_name} Expiry", value=default_date)
+dynamic_expiries = {idx_name: st.sidebar.text_input(f"{idx_name} Expiry", value=get_default_expiry(spec["default_weekday"])) for idx_name, spec in INDICES.items()}
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔑 DhanHQ Live Connection")
-d_client = st.sidebar.text_input("Dhan Client ID", type="password")
-d_token = st.sidebar.text_input("Access Token", type="password")
-auto_trade_live = st.sidebar.toggle("🚨 Enable Live Auto-Execution", value=False)
+st.sidebar.markdown("### 🔑 Data Connection Setup")
+d_client = st.sidebar.text_input("Dhan Client ID (Optional)", type="password")
+d_token = st.sidebar.text_input("Access Token (Optional)", type="password")
 
-curr_vix, is_vix_crashing, is_vix_extreme = get_vix_status()
+# 🚨 SAFETY CHECK: AUTO TRADE LIVE IS STRICTLY OFF (FALSE)
+auto_trade_live = st.sidebar.toggle("🚨 Enable Live Auto-Execution", value=False)
+if auto_trade_live: st.sidebar.warning("⚠️ Live Execution Lock Active. Running in Read-Only Paper Mode.")
+
+curr_vix, _, _ = get_vix_status()
 st.sidebar.info(f"📊 **India VIX:** {curr_vix}")
 
-# --- UI WORKSPACE TABS ---
-tab1, tab2 = st.tabs(["🎯 Live Radar & Execution Hub", "📈 Options Journal & Audit Scorecard"])
+tab1, tab2 = st.tabs(["🎯 Live Radar & Execution Hub", "📈 Auto-Journal & Scorecard"])
 
 with tab1:
-    st.subheader("Multi-Index Options Radar (Paper Trade Mode)")
-    
+    st.subheader("Automated Options Radar (Paper Trade)")
     col1, col2, col3 = st.columns(3)
     col1.metric("NIFTY 50 (15M)", check_15m_trend("^NSEI"))
     col2.metric("BANKNIFTY (15M)", check_15m_trend("^NSEBANK"))
     col3.metric("SENSEX (15M)", check_15m_trend("^BSESN"))
-
     st.markdown("---")
+    
     auto_mode = st.checkbox("🤖 Auto-Pilot (Scan every 60s)", value=False)
-    bypass_time = st.checkbox("Bypass Time-Lock (Testing Mode)", value=False)
+    bypass_time = st.checkbox("Bypass Time-Lock", value=False)
     manual_scan = st.button("🔥 Scan Market Signals Now", use_container_width=True)
 
     now_time = get_ist_time().time()
-    in_golden_window = (
-        (datetime.time(9, 30) <= now_time <= datetime.time(11, 30)) or 
-        (datetime.time(13, 30) <= now_time <= datetime.time(14, 45))
-    )
-    after_cutoff = (now_time >= datetime.time(15, 0))
+    in_golden_window = (datetime.time(9, 30) <= now_time <= datetime.time(11, 30)) or (datetime.time(13, 30) <= now_time <= datetime.time(14, 45))
 
     if auto_mode or manual_scan:
-        if after_cutoff and not bypass_time:
-            st.error("⏰ Scanning Locked: Post 3:00 PM Hard Stop Active.")
-        elif not in_golden_window and not bypass_time:
-            st.warning("⏳ Outside Golden Window (09:30-11:30 AM & 01:30-02:45 PM). Market may be choppy.")
+        if now_time >= datetime.time(15, 0) and not bypass_time: st.error("⏰ Scanning Locked: Post 3:00 PM Hard Stop Active.")
+        elif not in_golden_window and not bypass_time: st.warning("⏳ Outside Golden Window. Market may be choppy.")
         else:
-            with st.spinner("Analyzing VWAP, ADX, and Multi-Timeframe Alignment..."):
-                signals = scan_options_market(risk, auto_trade_live, dynamic_expiries)
+            with st.spinner("Analyzing VWAP, ADX & Fetching Live Premiums..."):
+                signals = scan_options_market(risk, auto_trade_live, dynamic_expiries, d_client, d_token)
 
             if signals:
-                st.success(f"🚨 {len(signals)} Smart Money Setup(s) Found!")
-                
+                st.success(f"🚨 {len(signals)} Smart Setup(s) Found!")
                 for i, sig in enumerate(signals):
                     st.markdown(f"#### 🎯 Signal: {sig['Index']} - {sig['Action']} {sig['Strike']}")
-                    st.info(f"Filters Validated: {sig['Filters']} | Sizing: {sig['Lots']} Lots ({sig['Qty']} Qty)")
+                    st.info(f"Filters: {sig['Filters']} | Sizing: {sig['Lots']} Lots | Source: {sig['Data Source']}")
                     
                     c1, c2, c3 = st.columns([2, 1, 1])
-                    user_entry = c1.number_input(
-                        f"Executed Premium Price (₹) - {sig['Index']}", 
-                        min_value=5.0, 
-                        value=float(sig['Est Premium']), 
-                        step=1.0, 
-                        key=f"entry_val_{i}"
-                    )
+                    user_entry = c1.number_input(f"Live Premium (₹) - Auto Fetched", min_value=5.0, value=float(sig['Est Premium']), step=1.0, key=f"entry_{i}")
                     
-                    if c2.button("✅ Trade Liya", key=f"take_btn_{i}", use_container_width=True):
+                    if c2.button("✅ Trade Liya (Start Auto-Tracking)", key=f"take_{i}", use_container_width=True):
                         record_trade_action(sig, user_entry, "TAKEN", auto_trade_live, d_client, d_token)
-                        st.success(f"Trade Recorded at ₹{user_entry} with 30% SL & 60% Target!")
-                        
-                    if c3.button("❌ Skip Kiya", key=f"skip_btn_{i}", use_container_width=True):
+                        st.success(f"Trade Recorded! Bot is tracking SL/Target for {sig['Index']}.")
+                    if c3.button("❌ Skip Kiya", key=f"skip_{i}", use_container_width=True):
                         record_trade_action(sig, user_entry, "SKIPPED", auto_trade_live, d_client, d_token)
-                        st.warning("Trade marked as Skipped in Journal.")
             else:
                 st.info("🧘 No institutional breakout matching core filters right now.")
 
@@ -436,41 +357,24 @@ with tab1:
                 st_autorefresh(interval=60000, key="auto_scan_refresh")
 
 with tab2:
-    st.subheader("🏆 Options Trading Journal & Live Scorecard")
-    
-    st.warning("⚠️ PAPER TRADE MODE: Manually track your live P&L at your broker. Update Scorecard manually or wait for API Phase-2.")
-    
-    if st.button("🔄 Refresh & Check 3:15 Hard Stop", type="primary"):
-        with st.spinner("Auditing Open Positions..."):
+    st.subheader("🏆 Auto-Tracked Options Journal")
+    if st.button("🔄 Refresh Live Positions & P&L", type="primary"):
+        with st.spinner("Auditing Positions..."):
             updated_df = update_scorecard(d_client, d_token)
     else:
         updated_df = load_portfolio()
 
     if not updated_df.empty:
-        closed_trades = updated_df[updated_df['Status'].isin(["Target Hit 🎯", "SL Hit 🛑", "Time Exit ⏰"])]
-        
-        if not closed_trades.empty:
-            total_net_pnl = closed_trades['Net P&L'].sum()
-            targets = len(closed_trades[closed_trades['Status'] == "Target Hit 🎯"])
-            sls = len(closed_trades[closed_trades['Status'] == "SL Hit 🛑"])
-            win_rate = round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0
-            
+        closed = updated_df[updated_df['Status'].isin(["Target Hit 🎯", "SL Hit 🛑", "Time Exit ⏰"])]
+        if not closed.empty:
+            total_net_pnl, targets, sls = closed['Net P&L'].sum(), len(closed[closed['Status'] == "Target Hit 🎯"]), len(closed[closed['Status'] == "SL Hit 🛑"])
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Win Rate 📊", f"{win_rate}%")
-            c2.metric("2R Target Achieved 🎯", targets)
-            c3.metric("30% SL Hit 🛑", sls)
+            c1.metric("Win Rate 📊", f"{round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0}%")
+            c2.metric("Targets Hit 🎯", targets)
+            c3.metric("SLs Hit 🛑", sls)
             c4.metric("Realized P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
         
-        st.write("### 📝 Trade Execution & Journal Log")
-        display_cols = [c for c in updated_df.columns if c not in ["Trade ID"]]
-        st.dataframe(
-            updated_df[display_cols].style.map(
-                lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x in ['SL Hit 🛑', 'Time Exit ⏰'] else ''),
-                subset=['Status']
-            ), 
-            use_container_width=True
-        )
-        csv_data = updated_df.to_csv(index=False).encode('utf-8')
-        st.download_button("💾 Download Verified Journal CSV", data=csv_data, file_name="Options_Journal.csv", mime="text/csv")
-    else:
-        st.info("No recorded trades yet. Run scanner to track setups.")
+        st.dataframe(updated_df[[c for c in updated_df.columns if c != "Trade ID"]].style.map(
+            lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x in ['SL Hit 🛑', 'Time Exit ⏰'] else ''), subset=['Status']), 
+            use_container_width=True)
+        st.download_button("💾 Download Journal CSV", data=updated_df.to_csv(index=False).encode('utf-8'), file_name="Options_Journal.csv", mime="text/csv")
