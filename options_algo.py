@@ -33,7 +33,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 st.set_page_config(page_title="God-Level F&O Sniper", page_icon="🎯", layout="wide")
 
 st.title("🎯 Institutional F&O Sniper (Options Algo)")
-st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Strike Selector 🎯 | Live P&L Tracker 📈)**")
+st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Strike Selector 🎯 | Spam-Free P&L 📈)**")
 
 PORTFOLIO_FILE = "options_journal.csv"
 
@@ -89,8 +89,8 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
         if "NO TRADE" in t['Action']: continue
         if active_trades >= max_allowed: break
             
-        # FIX: DUPLICATE FILTER APPLIED TO TELEGRAM AS WELL
-        if not ((df['Index'] == t['Index']) & (df['Date'] == today) & (df['Status'] == "Active ⏳")).any():
+        # FIX: ANTI-SPAM LOCK (1 Trade per Index per Day Only)
+        if not ((df['Index'] == t['Index']) & (df['Date'] == today)).any():
             exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty'], auto_trade)
             
             new_rows.append({
@@ -102,7 +102,6 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
             })
             active_trades += 1
             
-            # TELEGRAM ALERT MOVED INSIDE THE SAVING LOGIC (NO MORE SPAM)
             msg = f"🔍 Options Pick of the day\nBuy {t['Index']} • {t['Expiry']} • {t['Strike']} • {t['Opt Type']} with potential returns upto 100%\n• Buy at ₹{t['Buy Premium']}\n• Target: ₹{t['Target']}\n• Stoploss: ₹{t['Stoploss']}"
             send_telegram_alert(msg)
             
@@ -118,11 +117,11 @@ def update_scorecard():
         if row['Status'] == "Active ⏳":
             try:
                 ticker = INDICES[row['Index']]['ticker']
-                data = yf.Ticker(ticker, session=session).history(period="1d", interval="5m")
+                data = yf.Ticker(ticker, session=session).history(period="1d", interval="1m")
                 if data.empty: continue
                 
-                high_today = data['High'].max()
-                low_today = data['Low'].min()
+                # FIX: ONLY CHECKING LIVE PRICE (NOT DAY'S HIGH/LOW)
+                live_price = data['Close'].iloc[-1]
                 
                 opt_type = row['Opt Type']
                 spot_tgt = float(row['Spot Target'])
@@ -135,22 +134,29 @@ def update_scorecard():
                 premium_tgt = float(row['Target'])
                 premium_sl = float(row['Stoploss'])
                 
+                status = None
+                
                 if opt_type == "CALL":
-                    if high_today >= spot_tgt or low_today <= spot_sl:
-                        status = "Target Hit 🎯" if high_today >= spot_tgt else "SL Hit 🛑"
-                        exit_premium = premium_tgt if high_today >= spot_tgt else premium_sl
-                        net_pnl = (exit_premium - premium_entry) * qty
-                        df.at[index, 'Net P&L'] = round(net_pnl, 2)
-                        df.at[index, 'Status'] = status
-                        send_telegram_alert(f"{status}\n📈 {row['Index']} {opt_type}\n💰 P&L: ₹{round(net_pnl, 2)}")
+                    if live_price >= spot_tgt:
+                        status = "Target Hit 🎯"
+                        exit_premium = premium_tgt
+                    elif live_price <= spot_sl:
+                        status = "SL Hit 🛑"
+                        exit_premium = premium_sl
+                        
                 elif opt_type == "PUT":
-                    if low_today <= spot_tgt or high_today >= spot_sl:
-                        status = "Target Hit 🎯" if low_today <= spot_tgt else "SL Hit 🛑"
-                        exit_premium = premium_tgt if low_today <= spot_tgt else premium_sl
-                        net_pnl = (exit_premium - premium_entry) * qty
-                        df.at[index, 'Net P&L'] = round(net_pnl, 2)
-                        df.at[index, 'Status'] = status
-                        send_telegram_alert(f"{status}\n📉 {row['Index']} {opt_type}\n💰 P&L: ₹{round(net_pnl, 2)}")
+                    if live_price <= spot_tgt: # For PUT, target is a lower live price
+                        status = "Target Hit 🎯"
+                        exit_premium = premium_tgt
+                    elif live_price >= spot_sl: # For PUT, SL is a higher live price
+                        status = "SL Hit 🛑"
+                        exit_premium = premium_sl
+                
+                if status:
+                    net_pnl = (exit_premium - premium_entry) * qty
+                    df.at[index, 'Net P&L'] = round(net_pnl, 2)
+                    df.at[index, 'Status'] = status
+                    send_telegram_alert(f"{status}\n📊 {row['Index']} {opt_type}\n💰 Final P&L: ₹{round(net_pnl, 2)}")
             except: pass
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
@@ -320,7 +326,6 @@ with tab1:
                         ), use_container_width=True
                     )
                     
-                    # NOTE: Telegram alert is now sent safely from inside save_to_portfolio
                     save_to_portfolio(trades, auto_trade_live, d_client, d_token) 
                     
                 else:
