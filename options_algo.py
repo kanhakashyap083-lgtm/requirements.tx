@@ -33,7 +33,7 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 st.set_page_config(page_title="God-Level F&O Sniper", page_icon="🎯", layout="wide")
 
 st.title("🎯 Institutional F&O Sniper (Options Algo)")
-st.markdown("**(Sensex Active 🦅 | OI Decoder | Theta Shield 🛡️ | Gamma Blast 💥)**")
+st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Theta Shield 🛡️ | Gamma Blast 💥)**")
 
 PORTFOLIO_FILE = "options_journal.csv"
 
@@ -108,7 +108,14 @@ def theta_shield_active(data):
     recent_high = data['High'].tail(10).max()
     recent_low = data['Low'].tail(10).min()
     range_pct = ((recent_high - recent_low) / recent_low) * 100
-    return range_pct < 0.35 
+    return range_pct < 0.30  # Tightened shield for index
+
+def calculate_rsi(data, period=14):
+    delta = data['Close'].diff()
+    up = delta.clip(lower=0)
+    down = -1 * delta.clip(upper=0)
+    rs = up.ewm(com=period-1, adjust=False).mean() / down.ewm(com=period-1, adjust=False).mean()
+    return 100 - (100 / (1 + rs))
 
 def dynamic_strike_selector(index_name, live_price, vix_val, is_expiry_day, time_now):
     if is_expiry_day and time_now.hour >= 13 and time_now.minute >= 30:
@@ -119,15 +126,22 @@ def dynamic_strike_selector(index_name, live_price, vix_val, is_expiry_day, time
         return f"Slightly ITM (Momentum 🚀)"
 
 def oi_decoder_signal(data):
+    # FIXED: Using Price Velocity & Momentum (RSI + EMA) instead of Volume for Indices
     data['EMA9'] = data['Close'].ewm(span=9).mean()
     data['EMA21'] = data['Close'].ewm(span=21).mean()
-    avg_vol = data['Volume'].rolling(20).mean().iloc[-2]
-    live_vol = data['Volume'].iloc[-1]
-    live_c, ema9, ema21 = data['Close'].iloc[-1], data['EMA9'].iloc[-1], data['EMA21'].iloc[-1]
+    data['RSI'] = calculate_rsi(data)
     
-    if live_vol > (avg_vol * 3):
-        if live_c > ema9 and ema9 > ema21: return "🔥 BULLISH (CE Buy)"
-        if live_c < ema9 and ema9 < ema21: return "🩸 BEARISH (PE Buy)"
+    live_c = data['Close'].iloc[-1]
+    ema9 = data['EMA9'].iloc[-1]
+    ema21 = data['EMA21'].iloc[-1]
+    rsi = data['RSI'].iloc[-1]
+    
+    ema_spread = abs(ema9 - ema21) / ema21 * 100
+    
+    if live_c > ema9 and ema9 > ema21 and rsi > 55 and ema_spread > 0.02:
+        return "🔥 BULLISH (CE Buy Breakout)"
+    if live_c < ema9 and ema9 < ema21 and rsi < 45 and ema_spread > 0.02:
+        return "🩸 BEARISH (PE Buy Breakdown)"
     return "NEUTRAL"
 
 def scan_options_market(risk_amt, is_auto_exec):
@@ -226,7 +240,7 @@ with tab1:
         if not bypass_time and not (datetime.time(9, 15) <= now <= datetime.time(15, 30)):
             st.warning("⏳ Market Offline! F&O works during live market hours only.")
         else:
-            with st.spinner("Decoding Institutional OI & Volume... Please wait."):
+            with st.spinner("Decoding Institutional Momentum... Please wait."):
                 time.sleep(1) 
                 trades = scan_options_market(risk, auto_trade_live)
                 
@@ -234,7 +248,6 @@ with tab1:
                     st.success("🚨 Smart Money Signals Detected!")
                     df = pd.DataFrame(trades)
                     
-                    # FIX: CHANGED applymap TO map
                     st.dataframe(
                         df.style.map(
                             lambda x: 'background-color: #c8e6c9; color: black' if '🟢' in str(x) else ('background-color: #ffcdd2; color: black' if '🔴' in str(x) else ('background-color: #ffe0b2; color: black' if '🛡️' in str(x) else '')),
@@ -260,8 +273,6 @@ with tab2:
     if st.button("🔄 Refresh Live Net P&L", type="primary"):
         updated_df = update_scorecard()
         if not updated_df.empty:
-            
-            # FIX: CHANGED applymap TO map
             st.dataframe(
                 updated_df.style.map(
                     lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
