@@ -32,7 +32,6 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 # --- APP SETUP & PREMIUM UI ---
 st.set_page_config(page_title="God-Level F&O Sniper", page_icon="🎯", layout="wide")
 
-# ⚠️ MAIN TITLE RESTORED (Don't delete this line during copy-paste)
 st.title("🎯 Institutional F&O Sniper (Options Algo)")
 st.markdown("**(Sensex Active 🦅 | OI Decoder | Theta Shield 🛡️ | Gamma Blast 💥)**")
 
@@ -175,7 +174,6 @@ tab1, tab2 = st.tabs(["🎯 Live Options Radar & Weather", "📈 Options Journal
 
 vix_val = get_vix()
 
-# --- FIX: SIDEBAR NOW 100% MATCHES APP.PY ---
 st.sidebar.markdown("### ⚙️ Pro-Trader Risk Manager")
 st.sidebar.warning("⚡ Live F&O Mode Active: Scanning Nifty, BankNifty & Sensex")
 
@@ -235,8 +233,10 @@ with tab1:
                 if trades:
                     st.success("🚨 Smart Money Signals Detected!")
                     df = pd.DataFrame(trades)
+                    
+                    # FIX: CHANGED applymap TO map
                     st.dataframe(
-                        df.style.applymap(
+                        df.style.map(
                             lambda x: 'background-color: #c8e6c9; color: black' if '🟢' in str(x) else ('background-color: #ffcdd2; color: black' if '🔴' in str(x) else ('background-color: #ffe0b2; color: black' if '🛡️' in str(x) else '')),
                             subset=['Action']
                         ), use_container_width=True
@@ -260,8 +260,10 @@ with tab2:
     if st.button("🔄 Refresh Live Net P&L", type="primary"):
         updated_df = update_scorecard()
         if not updated_df.empty:
+            
+            # FIX: CHANGED applymap TO map
             st.dataframe(
-                updated_df.style.applymap(
+                updated_df.style.map(
                     lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
                     subset=['Status']
                 ), use_container_width=True
