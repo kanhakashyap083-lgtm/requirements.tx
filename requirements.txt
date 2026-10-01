@@ -1,3 +1,7 @@
 streamlit
-yfinance
 pandas
+numpy
+yfinance
+requests
+pytz
+streamlit-autorefresh
