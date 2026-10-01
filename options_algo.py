@@ -33,15 +33,15 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 st.set_page_config(page_title="God-Level F&O Sniper", page_icon="🎯", layout="wide")
 
 st.title("🎯 Institutional F&O Sniper (Options Algo)")
-st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Strike Selector 🎯 | Gamma Blast 💥)**")
+st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Strike Selector 🎯 | Live P&L Tracker 📈)**")
 
 PORTFOLIO_FILE = "options_journal.csv"
 
 # --- THE BIG 3 INDICES (Strictly F&O) ---
 INDICES = {
-    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 50, "expiry_day": 3, "step": 50},      # Thursday
-    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 15, "expiry_day": 2, "step": 100}, # Wednesday
-    "SENSEX": {"ticker": "^BSESN", "lot_size": 10, "expiry_day": 4, "step": 100}       # Friday
+    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 50, "expiry_day": 3, "step": 50},      
+    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 15, "expiry_day": 2, "step": 100}, 
+    "SENSEX": {"ticker": "^BSESN", "lot_size": 10, "expiry_day": 4, "step": 100}       
 }
 
 def get_ist_time(): return datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
@@ -49,8 +49,7 @@ def get_ist_time(): return datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
 def get_next_expiry(target_weekday):
     today = get_ist_time().date()
     days_ahead = target_weekday - today.weekday()
-    if days_ahead < 0: # Target day already passed this week
-        days_ahead += 7
+    if days_ahead < 0: days_ahead += 7
     next_date = today + datetime.timedelta(days=days_ahead)
     return next_date.strftime("%d %b %Y")
 
@@ -71,10 +70,10 @@ def check_index_trend(ticker):
     except: pass
     return True
 
-# --- OPTIONS JOURNAL TRACKING ---
+# --- MISSING SCOREBOARD TRACKING (RESTORED) ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE): return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=["Date", "Time", "Index", "Expiry", "Strike", "Opt Type", "Qty", "Buy Premium", "Target", "Stoploss", "Status", "Net P&L", "Algo Remarks"])
+    return pd.DataFrame(columns=["Date", "Time", "Index", "Expiry", "Strike", "Opt Type", "Qty", "Buy Premium", "Target", "Stoploss", "Spot Target", "Spot SL", "Status", "Net P&L", "Algo Remarks"])
 
 def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
     df = load_portfolio()
@@ -88,9 +87,7 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
     
     for t in new_trades:
         if "NO TRADE" in t['Action']: continue
-        if active_trades >= max_allowed: 
-            st.warning("⚠️ Max Trades limit reached! Ignoring new signals to prevent over-trading.")
-            break
+        if active_trades >= max_allowed: break
             
         if not ((df['Index'] == t['Index']) & (df['Date'] == today) & (df['Status'] == "Active ⏳")).any():
             exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty'], auto_trade)
@@ -99,6 +96,7 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
                 "Date": today, "Time": time_str, "Index": t['Index'], "Expiry": t['Expiry'],
                 "Strike": t['Strike'], "Opt Type": t['Opt Type'], "Qty": t['Qty'], 
                 "Buy Premium": t['Buy Premium'], "Target": t['Target'], "Stoploss": t['Stoploss'], 
+                "Spot Target": t['Spot Target'], "Spot SL": t['Spot SL'],
                 "Status": "Active ⏳", "Net P&L": 0.0, "Algo Remarks": exec_status
             })
             active_trades += 1
@@ -108,6 +106,46 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
 def update_scorecard():
     df = load_portfolio()
     if df.empty: return df
+    today = get_ist_time().strftime("%Y-%m-%d")
+    
+    for index, row in df.iterrows():
+        if row['Status'] == "Active ⏳":
+            try:
+                ticker = INDICES[row['Index']]['ticker']
+                data = yf.Ticker(ticker, session=session).history(period="1d", interval="5m")
+                if data.empty: continue
+                
+                high_today = data['High'].max()
+                low_today = data['Low'].min()
+                
+                opt_type = row['Opt Type']
+                spot_tgt = float(row['Spot Target'])
+                spot_sl = float(row['Spot SL'])
+                
+                qty_str = str(row['Qty']).replace(" Lots", "").strip()
+                qty = int(qty_str) if qty_str.isdigit() else INDICES[row['Index']]['lot_size']
+                
+                premium_entry = float(row['Buy Premium'])
+                premium_tgt = float(row['Target'])
+                premium_sl = float(row['Stoploss'])
+                
+                if opt_type == "CALL":
+                    if high_today >= spot_tgt or low_today <= spot_sl:
+                        status = "Target Hit 🎯" if high_today >= spot_tgt else "SL Hit 🛑"
+                        exit_premium = premium_tgt if high_today >= spot_tgt else premium_sl
+                        net_pnl = (exit_premium - premium_entry) * qty
+                        df.at[index, 'Net P&L'] = round(net_pnl, 2)
+                        df.at[index, 'Status'] = status
+                        send_telegram_alert(f"{status}\n📈 {row['Index']} {opt_type}\n💰 P&L: ₹{round(net_pnl, 2)}")
+                elif opt_type == "PUT":
+                    if low_today <= spot_tgt or high_today >= spot_sl:
+                        status = "Target Hit 🎯" if low_today <= spot_tgt else "SL Hit 🛑"
+                        exit_premium = premium_tgt if low_today <= spot_tgt else premium_sl
+                        net_pnl = (exit_premium - premium_entry) * qty
+                        df.at[index, 'Net P&L'] = round(net_pnl, 2)
+                        df.at[index, 'Status'] = status
+                        send_telegram_alert(f"{status}\n📉 {row['Index']} {opt_type}\n💰 P&L: ₹{round(net_pnl, 2)}")
+            except: pass
     df.to_csv(PORTFOLIO_FILE, index=False)
     return df
 
@@ -168,37 +206,38 @@ def scan_options_market(risk_amt, is_auto_exec):
             is_expiry = (today_weekday == info["expiry_day"])
             expiry_str = get_next_expiry(info["expiry_day"])
             
-            # --- EXACT STRIKE & PREMIUM CALCULATOR ---
             step = info["step"]
             strike_price = int(round(live_price / step) * step)
             
             opt_type = "CALL" if "BULLISH" in oi_signal else "PUT"
             action = f"🟢 BUY {opt_type}" if opt_type == "CALL" else f"🔴 BUY {opt_type}"
             
-            # Simulated Delta-Based Premium Pricing
             base_premium = int(live_price * (current_vix / 100) * 0.035) 
             if base_premium < 50: base_premium = 85
             
             spot_sl_pts = 30 if name == "BANKNIFTY" else (15 if name == "NIFTY 50" else 40)
             spot_tgt_pts = spot_sl_pts * 3
             
-            # Options move roughly 50% of Index (Delta 0.5)
             premium_buy = base_premium
             premium_sl = int(premium_buy - (spot_sl_pts * 0.5))
             premium_tgt = int(premium_buy + (spot_tgt_pts * 0.5))
+            
+            if opt_type == "CALL":
+                spot_target = live_price + spot_tgt_pts
+                spot_sl = live_price - spot_sl_pts
+            else:
+                spot_target = live_price - spot_tgt_pts
+                spot_sl = live_price + spot_sl_pts
             
             max_qty = int((risk_amt / (premium_buy - premium_sl)) // info["lot_size"]) * info["lot_size"]
             if max_qty == 0: max_qty = info["lot_size"] 
 
             results.append({
                 "Index": name, "Signal": oi_signal, "Action": action,
-                "Expiry": expiry_str,
-                "Strike": strike_price,
-                "Opt Type": opt_type,
-                "Qty": f"{max_qty} Lots", 
-                "Buy Premium": premium_buy, 
-                "Target": premium_tgt, 
-                "Stoploss": premium_sl, 
+                "Expiry": expiry_str, "Strike": strike_price, "Opt Type": opt_type,
+                "Qty": f"{max_qty} Lots", "Buy Premium": premium_buy, 
+                "Target": premium_tgt, "Stoploss": premium_sl, 
+                "Spot Target": round(spot_target, 2), "Spot SL": round(spot_sl, 2)
             })
         except: pass
     return results
@@ -266,7 +305,7 @@ with tab1:
                 
                 if trades:
                     st.success("🚨 Smart Money Signals Detected!")
-                    df = pd.DataFrame(trades)
+                    df = pd.DataFrame(trades).drop(columns=['Spot Target', 'Spot SL'], errors='ignore')
                     
                     st.dataframe(
                         df.style.map(
@@ -277,7 +316,6 @@ with tab1:
                     
                     save_to_portfolio(trades, auto_trade_live, d_client, d_token) 
                     
-                    # --- HDFC SKY STYLE TELEGRAM ALERTS ---
                     for t in trades:
                         if "NO TRADE" not in t["Action"]:
                             msg = f"🔍 Options Pick of the day\nBuy {t['Index']} • {t['Expiry']} • {t['Strike']} • {t['Opt Type']} with potential returns upto 100%\n• Buy at ₹{t['Buy Premium']}\n• Target: ₹{t['Target']}\n• Stoploss: ₹{t['Stoploss']}"
@@ -286,16 +324,37 @@ with tab1:
                     st.info("🧘‍♂️ No Institutional setup found right now. Patience pays in F&O.")
                     
             if auto_mode:
+                update_scorecard() 
                 time.sleep(60)
                 st.rerun()
 
+# --- MISSING DASHBOARD UI (RESTORED) ---
 with tab2:
-    st.subheader("🏆 Options Trading Journal")
+    st.subheader("🏆 Options Trading Journal & Live Scorecard")
     if st.button("🔄 Refresh Live Net P&L", type="primary"):
-        updated_df = update_scorecard()
+        with st.spinner("Calculating Options P&L..."):
+            updated_df = update_scorecard()
+        
         if not updated_df.empty:
+            closed_trades = updated_df[updated_df['Status'] != "Active ⏳"]
+            
+            if not closed_trades.empty:
+                total_net_pnl = closed_trades['Net P&L'].sum()
+                targets = len(closed_trades[closed_trades['Status'] == "Target Hit 🎯"])
+                sls = len(closed_trades[closed_trades['Status'] == "SL Hit 🛑"])
+                win_rate = round((targets / (targets + sls) * 100), 2) if (targets + sls) > 0 else 0
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Win Rate 📊", f"{win_rate}%")
+                col2.metric("Target Achieved 🎯", targets, delta_color="normal")
+                col3.metric("Stoploss Hit 🛑", sls, delta="-", delta_color="inverse")
+                col4.metric("Real Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
+            
+            st.write("### 📝 Full Audit Journal")
+            display_df = updated_df.drop(columns=['Spot Target', 'Spot SL'], errors='ignore')
+            
             st.dataframe(
-                updated_df.style.map(
+                display_df.style.map(
                     lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
                     subset=['Status']
                 ), use_container_width=True
