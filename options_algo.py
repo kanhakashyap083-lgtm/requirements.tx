@@ -66,7 +66,7 @@ def check_index_trend(ticker):
 # --- OPTIONS JOURNAL TRACKING ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE): return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=["Date", "Time", "Index", "Signal", "Action", "Strike Logic", "Qty", "Entry Spot", "SL (Pts)", "Status", "Net P&L", "Algo Remarks"])
+    return pd.DataFrame(columns=["Date", "Time", "Index", "Signal", "Action", "Strike Logic", "Qty", "Spot Entry", "Spot Target", "Spot SL", "Status", "Net P&L", "Algo Remarks"])
 
 def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
     df = load_portfolio()
@@ -85,12 +85,13 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
             break
             
         if not ((df['Index'] == t['Index']) & (df['Date'] == today) & (df['Status'] == "Active ⏳")).any():
-            exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty (Lots)'], auto_trade)
+            exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty'], auto_trade)
             
             new_rows.append({
                 "Date": today, "Time": time_str, "Index": t['Index'], "Signal": t['Signal'], 
-                "Action": t['Action'], "Strike Logic": t['Smart Strike'], "Qty": t['Qty (Lots)'], 
-                "Entry Spot": t['Live Spot'], "SL (Pts)": t['SL (Pts)'], "Status": "Active ⏳", "Net P&L": 0.0, "Algo Remarks": exec_status
+                "Action": t['Action'], "Strike Logic": t['Smart Strike'], "Qty": t['Qty'], 
+                "Spot Entry": t['Spot Entry'], "Spot Target": t['Spot Target'], "Spot SL": t['Spot SL'], 
+                "Status": "Active ⏳", "Net P&L": 0.0, "Algo Remarks": exec_status
             })
             active_trades += 1
     if new_rows:
@@ -108,7 +109,7 @@ def theta_shield_active(data):
     recent_high = data['High'].tail(10).max()
     recent_low = data['Low'].tail(10).min()
     range_pct = ((recent_high - recent_low) / recent_low) * 100
-    return range_pct < 0.30  # Tightened shield for index
+    return range_pct < 0.30  
 
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
@@ -126,7 +127,6 @@ def dynamic_strike_selector(index_name, live_price, vix_val, is_expiry_day, time
         return f"Slightly ITM (Momentum 🚀)"
 
 def oi_decoder_signal(data):
-    # FIXED: Using Price Velocity & Momentum (RSI + EMA) instead of Volume for Indices
     data['EMA9'] = data['Close'].ewm(span=9).mean()
     data['EMA21'] = data['Close'].ewm(span=21).mean()
     data['RSI'] = calculate_rsi(data)
@@ -159,7 +159,7 @@ def scan_options_market(risk_amt, is_auto_exec):
             live_price = data['Close'].iloc[-1]
             
             if theta_shield_active(data):
-                results.append({"Index": name, "Signal": "🛡️ SIDEWAYS", "Action": "NO TRADE (Theta Shield)", "Live Spot": round(live_price, 2), "Smart Strike": "-", "Qty (Lots)": "-", "SL (Pts)": "-", "Remark": "Market Choppy"})
+                results.append({"Index": name, "Signal": "🛡️ SIDEWAYS", "Action": "NO TRADE (Theta Shield)", "Smart Strike": "-", "Qty": "-", "Spot Entry": "-", "Spot Target": "-", "Spot SL": "-", "Remark": "Market Choppy"})
                 continue
 
             oi_signal = oi_decoder_signal(data)
@@ -167,9 +167,22 @@ def scan_options_market(risk_amt, is_auto_exec):
 
             is_expiry = (today_weekday == info["expiry_day"])
             strike_logic = dynamic_strike_selector(name, live_price, current_vix, is_expiry, now.time())
-            action = "🟢 BUY CALL (CE)" if "BULLISH" in oi_signal else "🔴 BUY PUT (PE)"
             
+            # --- PRECISE TARGET & SL CALCULATION (1:3 Risk Reward) ---
             sl_points = 30 if name == "BANKNIFTY" else (15 if name == "NIFTY 50" else 40)
+            target_points = sl_points * 3 
+
+            if "BULLISH" in oi_signal:
+                action = "🟢 BUY CALL (CE)"
+                entry_price = live_price
+                target_price = live_price + target_points
+                sl_price = live_price - sl_points
+            else:
+                action = "🔴 BUY PUT (PE)"
+                entry_price = live_price
+                target_price = live_price - target_points  # Put target is lower spot
+                sl_price = live_price + sl_points          # Put SL is higher spot
+            
             max_qty = int((risk_amt / sl_points) // info["lot_size"]) * info["lot_size"]
             if max_qty == 0: max_qty = info["lot_size"] 
 
@@ -177,8 +190,12 @@ def scan_options_market(risk_amt, is_auto_exec):
 
             results.append({
                 "Index": name, "Signal": oi_signal, "Action": action,
-                "Live Spot": round(live_price, 2), "Smart Strike": strike_logic,
-                "Qty (Lots)": f"{max_qty} Qty", "SL (Pts)": f"{sl_points} Pts", "Remark": remark
+                "Smart Strike": strike_logic,
+                "Qty": f"{max_qty} Lots", 
+                "Spot Entry": round(entry_price, 2), 
+                "Spot Target": round(target_price, 2), 
+                "Spot SL": round(sl_price, 2), 
+                "Remark": remark
             })
         except: pass
     return results
@@ -259,7 +276,7 @@ with tab1:
                     
                     for t in trades:
                         if "NO TRADE" not in t["Action"]:
-                            msg = f"{t['Action']} ALERT! 🚀\n📈 Index: {t['Index']}\n💡 Strike: {t['Smart Strike']}\n🎯 Signal: {t['Signal']}\n📦 Qty: {t['Qty (Lots)']}\n⚠️ SL: {t['SL (Pts)']}\n📌 {t['Remark']}"
+                            msg = f"{t['Action']} ALERT! 🚀\n📈 Index: {t['Index']}\n💡 Strike: {t['Smart Strike']}\n🎯 Signal: {t['Signal']}\n📦 Qty: {t['Qty']}\n🎯 Spot Target: {t['Spot Target']}\n⚠️ Spot SL: {t['Spot SL']}\n📌 {t['Remark']}"
                             send_telegram_alert(msg)
                 else:
                     st.info("🧘‍♂️ No Institutional setup found right now. Patience pays in F&O.")
