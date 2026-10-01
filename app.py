@@ -380,7 +380,6 @@ st.sidebar.markdown("### ⚙️ Pro-Trader Risk Manager")
 horizon_mode = st.sidebar.selectbox("🎯 Select Trading Horizon", 
     ["Intraday (15 Min)", "Short-Term (Daily)", "Mid-Term (Weekly)", "Long-Term (Monthly)"])
 
-# DUAL ENGINE TICKER ASSIGNMENT (4000+ STOCKS & DHAN LOGIC)
 if "Intraday" in horizon_mode:
     all_tickers = list(DHAN_STOCKS.keys())
     st.sidebar.warning(f"⚡ Intraday Active: Scanning Top {len(all_tickers)} Liquid F&O Stocks (Anti-Ban Safe)")
@@ -521,8 +520,10 @@ with tab2:
                 col4.metric("Real Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
             
             st.write("### 📝 Full Audit Journal (Brokerage Deducted)")
+            
+            # FIX: CHANGED applymap TO map
             st.dataframe(
-                updated_df.style.applymap(
+                updated_df.style.map(
                     lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x == 'SL Hit 🛑' else ''),
                     subset=['Status']
                 ), use_container_width=True
