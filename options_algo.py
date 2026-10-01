@@ -33,18 +33,26 @@ session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)
 st.set_page_config(page_title="God-Level F&O Sniper", page_icon="🎯", layout="wide")
 
 st.title("🎯 Institutional F&O Sniper (Options Algo)")
-st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Theta Shield 🛡️ | Gamma Blast 💥)**")
+st.markdown("**(Sensex Active 🦅 | Momentum Decoder ⚡ | Strike Selector 🎯 | Gamma Blast 💥)**")
 
 PORTFOLIO_FILE = "options_journal.csv"
 
 # --- THE BIG 3 INDICES (Strictly F&O) ---
 INDICES = {
-    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 50, "expiry_day": 3},  # Thursday
-    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 15, "expiry_day": 2}, # Wednesday
-    "SENSEX": {"ticker": "^BSESN", "lot_size": 10, "expiry_day": 4}    # Friday
+    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 50, "expiry_day": 3, "step": 50},      # Thursday
+    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 15, "expiry_day": 2, "step": 100}, # Wednesday
+    "SENSEX": {"ticker": "^BSESN", "lot_size": 10, "expiry_day": 4, "step": 100}       # Friday
 }
 
 def get_ist_time(): return datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
+
+def get_next_expiry(target_weekday):
+    today = get_ist_time().date()
+    days_ahead = target_weekday - today.weekday()
+    if days_ahead < 0: # Target day already passed this week
+        days_ahead += 7
+    next_date = today + datetime.timedelta(days=days_ahead)
+    return next_date.strftime("%d %b %Y")
 
 def get_vix():
     try:
@@ -66,7 +74,7 @@ def check_index_trend(ticker):
 # --- OPTIONS JOURNAL TRACKING ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE): return pd.read_csv(PORTFOLIO_FILE)
-    return pd.DataFrame(columns=["Date", "Time", "Index", "Signal", "Action", "Strike Logic", "Qty", "Spot Entry", "Spot Target", "Spot SL", "Status", "Net P&L", "Algo Remarks"])
+    return pd.DataFrame(columns=["Date", "Time", "Index", "Expiry", "Strike", "Opt Type", "Qty", "Buy Premium", "Target", "Stoploss", "Status", "Net P&L", "Algo Remarks"])
 
 def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
     df = load_portfolio()
@@ -88,9 +96,9 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
             exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty'], auto_trade)
             
             new_rows.append({
-                "Date": today, "Time": time_str, "Index": t['Index'], "Signal": t['Signal'], 
-                "Action": t['Action'], "Strike Logic": t['Smart Strike'], "Qty": t['Qty'], 
-                "Spot Entry": t['Spot Entry'], "Spot Target": t['Spot Target'], "Spot SL": t['Spot SL'], 
+                "Date": today, "Time": time_str, "Index": t['Index'], "Expiry": t['Expiry'],
+                "Strike": t['Strike'], "Opt Type": t['Opt Type'], "Qty": t['Qty'], 
+                "Buy Premium": t['Buy Premium'], "Target": t['Target'], "Stoploss": t['Stoploss'], 
                 "Status": "Active ⏳", "Net P&L": 0.0, "Algo Remarks": exec_status
             })
             active_trades += 1
@@ -109,7 +117,7 @@ def theta_shield_active(data):
     recent_high = data['High'].tail(10).max()
     recent_low = data['Low'].tail(10).min()
     range_pct = ((recent_high - recent_low) / recent_low) * 100
-    return range_pct < 0.30  
+    return range_pct < 0.25  
 
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
@@ -117,14 +125,6 @@ def calculate_rsi(data, period=14):
     down = -1 * delta.clip(upper=0)
     rs = up.ewm(com=period-1, adjust=False).mean() / down.ewm(com=period-1, adjust=False).mean()
     return 100 - (100 / (1 + rs))
-
-def dynamic_strike_selector(index_name, live_price, vix_val, is_expiry_day, time_now):
-    if is_expiry_day and time_now.hour >= 13 and time_now.minute >= 30:
-        return f"ATM/OTM (Gamma Blast 💥)"
-    elif vix_val > 18:
-        return f"Deep ITM (VIX Protect 🛡️)"
-    else:
-        return f"Slightly ITM (Momentum 🚀)"
 
 def oi_decoder_signal(data):
     data['EMA9'] = data['Close'].ewm(span=9).mean()
@@ -159,43 +159,46 @@ def scan_options_market(risk_amt, is_auto_exec):
             live_price = data['Close'].iloc[-1]
             
             if theta_shield_active(data):
-                results.append({"Index": name, "Signal": "🛡️ SIDEWAYS", "Action": "NO TRADE (Theta Shield)", "Smart Strike": "-", "Qty": "-", "Spot Entry": "-", "Spot Target": "-", "Spot SL": "-", "Remark": "Market Choppy"})
+                results.append({"Index": name, "Action": "NO TRADE (Theta Shield)", "Signal": "🛡️ SIDEWAYS", "Expiry": "-", "Strike": "-", "Opt Type": "-", "Qty": "-", "Buy Premium": "-", "Target": "-", "Stoploss": "-"})
                 continue
 
             oi_signal = oi_decoder_signal(data)
             if oi_signal == "NEUTRAL": continue
 
             is_expiry = (today_weekday == info["expiry_day"])
-            strike_logic = dynamic_strike_selector(name, live_price, current_vix, is_expiry, now.time())
+            expiry_str = get_next_expiry(info["expiry_day"])
             
-            # --- PRECISE TARGET & SL CALCULATION (1:3 Risk Reward) ---
-            sl_points = 30 if name == "BANKNIFTY" else (15 if name == "NIFTY 50" else 40)
-            target_points = sl_points * 3 
-
-            if "BULLISH" in oi_signal:
-                action = "🟢 BUY CALL (CE)"
-                entry_price = live_price
-                target_price = live_price + target_points
-                sl_price = live_price - sl_points
-            else:
-                action = "🔴 BUY PUT (PE)"
-                entry_price = live_price
-                target_price = live_price - target_points  # Put target is lower spot
-                sl_price = live_price + sl_points          # Put SL is higher spot
+            # --- EXACT STRIKE & PREMIUM CALCULATOR ---
+            step = info["step"]
+            strike_price = int(round(live_price / step) * step)
             
-            max_qty = int((risk_amt / sl_points) // info["lot_size"]) * info["lot_size"]
+            opt_type = "CALL" if "BULLISH" in oi_signal else "PUT"
+            action = f"🟢 BUY {opt_type}" if opt_type == "CALL" else f"🔴 BUY {opt_type}"
+            
+            # Simulated Delta-Based Premium Pricing
+            base_premium = int(live_price * (current_vix / 100) * 0.035) 
+            if base_premium < 50: base_premium = 85
+            
+            spot_sl_pts = 30 if name == "BANKNIFTY" else (15 if name == "NIFTY 50" else 40)
+            spot_tgt_pts = spot_sl_pts * 3
+            
+            # Options move roughly 50% of Index (Delta 0.5)
+            premium_buy = base_premium
+            premium_sl = int(premium_buy - (spot_sl_pts * 0.5))
+            premium_tgt = int(premium_buy + (spot_tgt_pts * 0.5))
+            
+            max_qty = int((risk_amt / (premium_buy - premium_sl)) // info["lot_size"]) * info["lot_size"]
             if max_qty == 0: max_qty = info["lot_size"] 
-
-            remark = "💥 GAMMA BLAST ACTIVE!" if (is_expiry and now.time().hour >= 13) else "🚀 Momentum Entry"
 
             results.append({
                 "Index": name, "Signal": oi_signal, "Action": action,
-                "Smart Strike": strike_logic,
+                "Expiry": expiry_str,
+                "Strike": strike_price,
+                "Opt Type": opt_type,
                 "Qty": f"{max_qty} Lots", 
-                "Spot Entry": round(entry_price, 2), 
-                "Spot Target": round(target_price, 2), 
-                "Spot SL": round(sl_price, 2), 
-                "Remark": remark
+                "Buy Premium": premium_buy, 
+                "Target": premium_tgt, 
+                "Stoploss": premium_sl, 
             })
         except: pass
     return results
@@ -257,7 +260,7 @@ with tab1:
         if not bypass_time and not (datetime.time(9, 15) <= now <= datetime.time(15, 30)):
             st.warning("⏳ Market Offline! F&O works during live market hours only.")
         else:
-            with st.spinner("Decoding Institutional Momentum... Please wait."):
+            with st.spinner("Decoding Institutional Momentum & Option Chain... Please wait."):
                 time.sleep(1) 
                 trades = scan_options_market(risk, auto_trade_live)
                 
@@ -274,9 +277,10 @@ with tab1:
                     
                     save_to_portfolio(trades, auto_trade_live, d_client, d_token) 
                     
+                    # --- HDFC SKY STYLE TELEGRAM ALERTS ---
                     for t in trades:
                         if "NO TRADE" not in t["Action"]:
-                            msg = f"{t['Action']} ALERT! 🚀\n📈 Index: {t['Index']}\n💡 Strike: {t['Smart Strike']}\n🎯 Signal: {t['Signal']}\n📦 Qty: {t['Qty']}\n🎯 Spot Target: {t['Spot Target']}\n⚠️ Spot SL: {t['Spot SL']}\n📌 {t['Remark']}"
+                            msg = f"🔍 Options Pick of the day\nBuy {t['Index']} • {t['Expiry']} • {t['Strike']} • {t['Opt Type']} with potential returns upto 100%\n• Buy at ₹{t['Buy Premium']}\n• Target: ₹{t['Target']}\n• Stoploss: ₹{t['Stoploss']}"
                             send_telegram_alert(msg)
                 else:
                     st.info("🧘‍♂️ No Institutional setup found right now. Patience pays in F&O.")
