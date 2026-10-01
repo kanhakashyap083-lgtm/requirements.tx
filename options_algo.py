@@ -70,7 +70,7 @@ def check_index_trend(ticker):
     except: pass
     return True
 
-# --- MISSING SCOREBOARD TRACKING (RESTORED) ---
+# --- OPTIONS JOURNAL TRACKING ---
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE): return pd.read_csv(PORTFOLIO_FILE)
     return pd.DataFrame(columns=["Date", "Time", "Index", "Expiry", "Strike", "Opt Type", "Qty", "Buy Premium", "Target", "Stoploss", "Spot Target", "Spot SL", "Status", "Net P&L", "Algo Remarks"])
@@ -89,6 +89,7 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
         if "NO TRADE" in t['Action']: continue
         if active_trades >= max_allowed: break
             
+        # FIX: DUPLICATE FILTER APPLIED TO TELEGRAM AS WELL
         if not ((df['Index'] == t['Index']) & (df['Date'] == today) & (df['Status'] == "Active ⏳")).any():
             exec_status = place_dhan_options_order(d_client, d_token, t['Index'], t['Action'], t['Qty'], auto_trade)
             
@@ -100,6 +101,11 @@ def save_to_portfolio(new_trades, auto_trade, d_client, d_token):
                 "Status": "Active ⏳", "Net P&L": 0.0, "Algo Remarks": exec_status
             })
             active_trades += 1
+            
+            # TELEGRAM ALERT MOVED INSIDE THE SAVING LOGIC (NO MORE SPAM)
+            msg = f"🔍 Options Pick of the day\nBuy {t['Index']} • {t['Expiry']} • {t['Strike']} • {t['Opt Type']} with potential returns upto 100%\n• Buy at ₹{t['Buy Premium']}\n• Target: ₹{t['Target']}\n• Stoploss: ₹{t['Stoploss']}"
+            send_telegram_alert(msg)
+            
     if new_rows:
         pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True).to_csv(PORTFOLIO_FILE, index=False)
 
@@ -314,12 +320,9 @@ with tab1:
                         ), use_container_width=True
                     )
                     
+                    # NOTE: Telegram alert is now sent safely from inside save_to_portfolio
                     save_to_portfolio(trades, auto_trade_live, d_client, d_token) 
                     
-                    for t in trades:
-                        if "NO TRADE" not in t["Action"]:
-                            msg = f"🔍 Options Pick of the day\nBuy {t['Index']} • {t['Expiry']} • {t['Strike']} • {t['Opt Type']} with potential returns upto 100%\n• Buy at ₹{t['Buy Premium']}\n• Target: ₹{t['Target']}\n• Stoploss: ₹{t['Stoploss']}"
-                            send_telegram_alert(msg)
                 else:
                     st.info("🧘‍♂️ No Institutional setup found right now. Patience pays in F&O.")
                     
@@ -328,7 +331,6 @@ with tab1:
                 time.sleep(60)
                 st.rerun()
 
-# --- MISSING DASHBOARD UI (RESTORED) ---
 with tab2:
     st.subheader("🏆 Options Trading Journal & Live Scorecard")
     if st.button("🔄 Refresh Live Net P&L", type="primary"):
