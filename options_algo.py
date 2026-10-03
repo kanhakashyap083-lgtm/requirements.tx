@@ -10,7 +10,14 @@ import requests
 from streamlit_autorefresh import st_autorefresh
 import warnings
 
+# --- UI THEME IMPORT ---
+from ui_theme import apply_theme, chip
+
 warnings.filterwarnings("ignore")
+
+# --- UI PAGE CONFIG ---
+st.set_page_config(page_title="Institutional F&O Sniper", page_icon="🎯", layout="wide")
+apply_theme() 
 
 # --- GLOBAL ERROR STATE & TELEGRAM ---
 if 'api_error_count' not in st.session_state:
@@ -45,9 +52,9 @@ def log_and_alert_error(msg):
 
 # --- INDICES & EXPIRIES ---
 INDICES = {
-    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 65, "step": 50, "expiry_type": "weekly", "weekday": 1},      # Tue
-    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 30, "step": 100, "expiry_type": "monthly", "weekday": 1}, # Last Tue
-    "SENSEX": {"ticker": "^BSESN", "lot_size": 20, "step": 100, "expiry_type": "weekly", "weekday": 3}        # Thu
+    "NIFTY 50": {"ticker": "^NSEI", "lot_size": 65, "step": 50, "expiry_type": "weekly", "weekday": 1},      
+    "BANKNIFTY": {"ticker": "^NSEBANK", "lot_size": 30, "step": 100, "expiry_type": "monthly", "weekday": 1}, 
+    "SENSEX": {"ticker": "^BSESN", "lot_size": 20, "step": 100, "expiry_type": "weekly", "weekday": 3}        
 }
 
 def get_weekly_expiry(target_weekday):
@@ -210,13 +217,13 @@ def load_portfolio():
 def get_daily_trade_count():
     df = load_portfolio()
     if df.empty: return 0
-    return len(df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'] != "Skipped ❌")])
+    return len(df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (~df['Status'].astype(str).str.contains("Skipped", na=False))])
 
 def is_cooldown_active(index_name):
     df = load_portfolio()
     if df.empty: return False
     today = get_ist_time().strftime("%Y-%m-%d")
-    sl_trades = df[(df['Date'] == today) & (df['Index'] == index_name) & (df['Status'] == "SL Hit 🛑")]
+    sl_trades = df[(df['Date'] == today) & (df['Index'] == index_name) & (df['Status'].astype(str).str.startswith("SL Hit"))]
     if sl_trades.empty: return False
     
     last_exit_str = sl_trades.iloc[-1].get('Exit Time')
@@ -228,7 +235,7 @@ def is_recently_skipped(index_name, opt_type):
     df = load_portfolio()
     if df.empty: return False
     today = get_ist_time().strftime("%Y-%m-%d")
-    skipped = df[(df['Date'] == today) & (df['Index'] == index_name) & (df['Opt Type'] == opt_type) & (df['Status'] == "Skipped ❌")]
+    skipped = df[(df['Date'] == today) & (df['Index'] == index_name) & (df['Opt Type'] == opt_type) & (df['Status'].astype(str).str.startswith("Skipped"))]
     if skipped.empty: return False
     last_skip_str = skipped.iloc[-1]['Time']
     last_skip = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{today} {last_skip_str}", "%Y-%m-%d %H:%M:%S"))
@@ -261,7 +268,7 @@ def update_scorecard(d_client, d_token):
     exit_time_str = now.strftime("%H:%M:%S")
 
     for index, row in df.iterrows():
-        if row['Status'] == "Active ⏳":
+        if "Active" in str(row['Status']):
             entry_premium = float(row['Entry Premium'])
             trade_entry_time = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{row['Date']} {row['Time']}", "%Y-%m-%d %H:%M:%S"))
             mins_active = (now - trade_entry_time).total_seconds() / 60
@@ -338,7 +345,7 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
         return results
 
     df = load_portfolio()
-    active_indices = df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'] == "Active ⏳")]['Index'].tolist()
+    active_indices = df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'].astype(str).str.contains("Active"))]['Index'].tolist()
     if active_indices:
         return results
 
@@ -389,34 +396,32 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             log_and_alert_error(f"Scanner Loop Error ({name}): {e}")
     return results
 
+# --- STYLE HELPER FOR DATAFRAME ---
+def style_status(val):
+    s = str(val)
+    if s.startswith('Target Hit'): return 'background-color: #c8e6c9'
+    if any(x in s for x in ['SL Hit', 'Pending', 'Trailed', 'Manual', 'Time Exit']): return 'background-color: #ffcdd2'
+    return ''
+
 # --- SIDEBAR & UI ---
-st.set_page_config(page_title="Institutional F&O Sniper", page_icon="🎯", layout="wide")
 st.title("🎯 Institutional F&O Sniper (V1 - Frozen for Paper Trade)")
 
-if st.session_state.api_error_count > 0:
-    st.error(f"⚠️ System encountered {st.session_state.api_error_count} API errors. Check terminal for logs.")
+with st.sidebar.expander("⚙️ Capital & Risk Management", expanded=True):
+    capital = st.number_input("Total Trading Capital (₹)", min_value=10000, value=100000, step=5000)
+    risk_pct = st.slider("Max Risk per Trade (%)", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
+    risk_amt = capital * (risk_pct / 100)
+    st.info(f"💰 Allowed Risk per Trade: **₹{int(risk_amt)}**")
 
-st.sidebar.markdown("### ⚙️ Capital & Risk Management")
-capital = st.sidebar.number_input("Total Trading Capital (₹)", min_value=10000, value=100000, step=5000)
-risk_pct = st.sidebar.slider("Max Risk per Trade (%)", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
-risk_amt = capital * (risk_pct / 100)
-st.sidebar.info(f"💰 Allowed Risk per Trade: **₹{int(risk_amt)}**")
+with st.sidebar.expander("📅 Dynamic Expiry Selectors"):
+    dynamic_expiries = {}
+    for idx_name, spec in INDICES.items():
+        val = get_monthly_expiry(spec["weekday"]) if spec["expiry_type"] == "monthly" else get_weekly_expiry(spec["weekday"])
+        dynamic_expiries[idx_name] = st.text_input(f"{idx_name} Expiry", value=val)
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📅 Dynamic Expiry Selectors")
-dynamic_expiries = {}
-for idx_name, spec in INDICES.items():
-    val = get_monthly_expiry(spec["weekday"]) if spec["expiry_type"] == "monthly" else get_weekly_expiry(spec["weekday"])
-    dynamic_expiries[idx_name] = st.sidebar.text_input(f"{idx_name} Expiry", value=val)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🔑 Data Connection Setup")
-d_client = st.sidebar.text_input("Dhan Client ID (Optional)", type="password")
-d_token = st.sidebar.text_input("Access Token (Optional)", type="password")
-st.sidebar.warning("⚠️ Strictly Read-Only Paper Mode.")
-
-curr_vix, _, _ = get_vix_status()
-if curr_vix: st.sidebar.info(f"📊 **India VIX:** {curr_vix}")
+with st.sidebar.expander("🔑 Data Connection Setup"):
+    d_client = st.text_input("Dhan Client ID (Optional)", type="password")
+    d_token = st.text_input("Access Token (Optional)", type="password")
+    st.warning("⚠️ Strictly Read-Only Paper Mode.")
 
 tab1, tab2 = st.tabs(["🎯 Live Radar & Execution Hub", "📈 Auto-Journal & Scorecard"])
 
@@ -424,19 +429,56 @@ if 'current_signals' not in st.session_state: st.session_state.current_signals =
 if 'last_scan_time' not in st.session_state: st.session_state.last_scan_time = None
 
 with tab1:
-    col1, col2, col3 = st.columns(3)
-    col1.metric("NIFTY 50 (15M)", check_15m_trend("^NSEI"))
-    col2.metric("BANKNIFTY (15M)", check_15m_trend("^NSEBANK"))
-    col3.metric("SENSEX (15M)", check_15m_trend("^BSESN"))
-    st.markdown("---")
-    
-    auto_mode = st.checkbox("🤖 Auto-Pilot (Scan every 55s)", value=False)
-    bypass_time = st.checkbox("Bypass Time-Lock", value=False)
-    manual_scan = st.button("🔥 Scan Market Signals Now", use_container_width=True)
-
     now = get_ist_time()
     now_time = now.time()
     in_golden_window = (datetime.time(9, 30) <= now_time <= datetime.time(11, 30)) or (datetime.time(13, 30) <= now_time <= datetime.time(14, 45))
+    
+    # FIX 2: Market Open Logic includes weekday check
+    market_stat = "Open" if (now.weekday() < 5 and datetime.time(9, 15) <= now_time <= datetime.time(15, 30)) else "Closed"
+    
+    curr_vix, _, _ = get_vix_status()
+    vix_str = f"VIX: {curr_vix}" if curr_vix else "VIX: Err"
+    trade_count = get_daily_trade_count()
+    
+    df_current = load_portfolio()
+    active_df = df_current[df_current['Status'].astype(str).str.contains("Active|Pending", regex=True, na=False)]
+    has_active = not active_df.empty
+    
+    active_chip = chip("Active Trade: YES", "warn") if has_active else chip("Active Trade: NO", "neutral")
+    scan_time_str = st.session_state.last_scan_time.strftime("%H:%M:%S") if st.session_state.last_scan_time else "None"
+    err_chip = chip(f"Errors: {st.session_state.api_error_count}", "bad" if st.session_state.api_error_count > 0 else "ok")
+    
+    # FIX 3: 15M Trend Chips fetching logic
+    t_n = check_15m_trend("^NSEI")
+    t_bn = check_15m_trend("^NSEBANK")
+    t_sn = check_15m_trend("^BSESN")
+    c_n = "ok" if t_n=="BULLISH" else ("bad" if t_n=="BEARISH" else "neutral")
+    c_bn = "ok" if t_bn=="BULLISH" else ("bad" if t_bn=="BEARISH" else "neutral")
+    c_sn = "ok" if t_sn=="BULLISH" else ("bad" if t_sn=="BEARISH" else "neutral")
+    trend_str = f"{chip('N50: '+t_n, c_n)} {chip('BN: '+t_bn, c_bn)} {chip('SN: '+t_sn, c_sn)}"
+    
+    c_auto, c_bypass, c_scan = st.columns([1, 1, 1])
+    auto_mode = c_auto.checkbox("🤖 Auto-Pilot (Scan every 55s)", value=False)
+    bypass_time = c_bypass.checkbox("Bypass Time-Lock", value=False)
+    manual_scan = c_scan.button("🔥 Scan Market Signals Now", use_container_width=True)
+
+    auto_str = "Auto: ON" if auto_mode else "Auto: OFF"
+    st.markdown(f"<div style='margin-bottom:1rem;'>{chip(now.strftime('%I:%M %p IST'))} {chip('Market: '+market_stat, 'ok' if market_stat=='Open' else 'neutral')} {chip(vix_str)} {chip(auto_str, 'ok' if auto_mode else 'neutral')} {active_chip} {chip(f'Trades: {trade_count}/3')} {chip('Scan: '+scan_time_str)} {err_chip} <br><div style='margin-top:0.4rem;'>{trend_str}</div></div>", unsafe_allow_html=True)
+    
+    if has_active:
+        st.markdown("#### 🏃 Active Trades")
+        for _, row in active_df.iterrows():
+            card_cls = "sig-call" if row['Opt Type'] == "CALL" else "sig-put"
+            entry_time = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{row['Date']} {row['Time']}", "%Y-%m-%d %H:%M:%S"))
+            mins_active = int((now - entry_time).total_seconds() / 60)
+            
+            st.markdown(f"""
+            <div class="sig-card {card_cls}">
+                <div class="title">{row['Index']} {row['Strike']} {row['Opt Type']} <span style="font-size:0.8em; opacity:0.7">({mins_active} mins active)</span></div>
+                <div class="levels">Entry: ₹{row['Entry Premium']} | SL: ₹{row['SL Level']} | 1R: ₹{row['1R Level']} | TGT: ₹{row['Target Level']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        st.markdown("---")
 
     active_signals = []
     for sig in st.session_state.current_signals:
@@ -451,6 +493,9 @@ with tab1:
             st.session_state.current_signals = []
         elif not in_golden_window and not bypass_time: 
             st.warning("⏳ Outside Golden Window. Market may be choppy.")
+            st.session_state.current_signals = []
+        elif market_stat == "Closed" and not bypass_time:
+            st.warning("⏳ Market is currently closed.")
             st.session_state.current_signals = []
         else:
             with st.spinner("Analyzing VWAP, ADX & Fetching Live Premiums..."):
@@ -468,25 +513,37 @@ with tab1:
     if st.session_state.current_signals:
          st.success(f"🚨 {len(st.session_state.current_signals)} Smart Setup(s) Active!")
          for i, sig in enumerate(list(st.session_state.current_signals)):
-             st.markdown(f"#### 🎯 Signal: {sig['Index']} - {sig['Action']} {sig['Strike']}")
-             st.info(f"Filters: {sig['Filters']} | Sizing: {sig['Lots']} Lots | Source: {sig['Data Source']}")
+             card_cls = "sig-call" if sig['Opt Type'] == "CALL" else "sig-put"
+             ds_chip = chip("LTP Verified", "ok") if "Verified" in sig['Data Source'] else chip("LTP Estimated", "warn")
+             sl_est = sig['Est Premium'] * 0.70
+             r1_est = sig['Est Premium'] * 1.30
+             tgt_est = sig['Est Premium'] * 1.60
+             
+             sig_time_dt = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{now.strftime('%Y-%m-%d')} {sig['Signal Time']}", "%Y-%m-%d %H:%M:%S"))
+             sec_left = max(0, int(180 - (now - sig_time_dt).total_seconds()))
+             time_chip = chip(f"{sec_left}s left", "warn" if sec_left < 60 else "ok")
+
+             st.markdown(f"""
+             <div class="sig-card {card_cls}">
+                 <div class="title">{sig['Index']} {sig['Strike']} {sig['Opt Type']} <span style="font-size:0.8em; opacity:0.7">({sig['Expiry']})</span></div>
+                 <div class="levels">Est: ₹{sig['Est Premium']} | SL: ₹{sl_est:.1f} | 1R: ₹{r1_est:.1f} | TGT: ₹{tgt_est:.1f}</div>
+                 <div style="margin-top:5px;">{ds_chip} {time_chip} {chip(sig['Filters'])}</div>
+             </div>
+             """, unsafe_allow_html=True)
              
              c1, c2, c3 = st.columns([2, 1, 1])
-             user_entry = c1.number_input(f"Live Premium (₹)", min_value=5.0, value=float(sig['Est Premium']), step=1.0, key=f"entry_{sig['Index']}_{sig['Opt Type']}")
+             user_entry = c1.number_input(f"Live Premium (₹) - {sig['Index']}", min_value=5.0, value=float(sig['Est Premium']), step=1.0, key=f"entry_{sig['Index']}_{sig['Opt Type']}")
              
              if c2.button("✅ Trade Liya", key=f"take_{sig['Index']}_{sig['Opt Type']}", use_container_width=True):
-                 signal_time = pytz.timezone('Asia/Kolkata').localize(datetime.datetime.strptime(f"{now.strftime('%Y-%m-%d')} {sig['Signal Time']}", "%Y-%m-%d %H:%M:%S"))
-                 
-                 # FIX 1: Double verification of active/limit logic AT THE EXACT MOMENT of button click
                  current_df = load_portfolio()
-                 active_now = current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (current_df['Status'].isin(["Active ⏳", "Pending Exit Price ⏳"]))]
-                 daily_count = len(current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (current_df['Status'] != "Skipped ❌")])
+                 active_now = current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (current_df['Status'].astype(str).str.contains("Active|Pending", regex=True, na=False))]
+                 daily_count = len(current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (~current_df['Status'].astype(str).str.contains("Skipped", na=False))])
 
                  if not active_now.empty:
                      st.error("⚠️ Trade blocked: You already have an active or pending trade.")
                  elif daily_count >= 3:
                      st.error("⚠️ Trade blocked: Max 3 trades limit reached for today.")
-                 elif (get_ist_time() - signal_time).total_seconds() > 180:
+                 elif sec_left <= 0:
                      st.error(f"⏳ Signal Expired! 3 minutes passed since generation. Do not chase.")
                  else:
                      record_trade_action(sig, user_entry, "TAKEN")
@@ -504,11 +561,9 @@ with tab1:
 with tab2:
     st.subheader("🏆 Auto-Tracked Options Journal")
     
-    df_current = load_portfolio()
-    active_trades = df_current[df_current['Status'].isin(["Active ⏳", "Pending Exit Price ⏳"])]
-    if not active_trades.empty:
+    if has_active:
         st.markdown("### 🛠️ Manage Trades (Manual Close)")
-        for i, row in active_trades.iterrows():
+        for i, row in active_df.iterrows():
             mc1, mc2, mc3 = st.columns([3, 1, 1])
             mc1.write(f"**{row['Index']} {row['Opt Type']} {row['Strike']}** (Entry: ₹{row['Entry Premium']}) - {row['Status']}")
             exit_val = mc2.number_input("Exit Price (₹)", min_value=1.0, value=float(row['Entry Premium']), step=1.0, key=f"manual_exit_{row['Trade ID']}")
@@ -534,29 +589,43 @@ with tab2:
 
     if not updated_df.empty:
         verified_closed = updated_df[(updated_df['Verified'] == True) | (updated_df['Verified'] == "True")]
-        verified_closed = verified_closed[verified_closed['Status'].isin(["Target Hit 🎯", "SL Hit 🛑", "Trailed SL Hit 🛡️", "Manual Close ✋", "Time Exit ⏰"])]
-        st.markdown("*(Note: Estimated/Unverified trades excluded from Win-Rate and Realized P&L)*")
+        # FIX 1: Secure string matching for inclusion
+        verified_closed = verified_closed[verified_closed['Status'].astype(str).str.contains("Target Hit|SL Hit|Trailed SL|Manual Close|Time Exit", regex=True, na=False)]
         
         if not verified_closed.empty:
             total_net_pnl = verified_closed['Net P&L'].sum()
+            today_str = now.strftime("%Y-%m-%d")
+            today_pnl = verified_closed[verified_closed['Date'] == today_str]['Net P&L'].sum()
+            
             wins, total_closed = len(verified_closed[verified_closed['Net P&L'] > 0]), len(verified_closed)
             win_rate = round((wins / total_closed * 100), 2) if total_closed > 0 else 0
             
-            targets = len(verified_closed[verified_closed['Status'] == "Target Hit 🎯"])
+            # FIX 1: Exact string prefix matching
+            targets = len(verified_closed[verified_closed['Status'].astype(str).str.startswith("Target Hit")])
+            sls = len(verified_closed[verified_closed['Status'].astype(str).str.contains("SL Hit|Trailed SL|Manual Close|Time Exit", regex=True, na=False)])
             
-            # FIX 2: Exact matching strings for the SLs/Exits metric
-            sls = len(verified_closed[verified_closed['Status'].isin(["SL Hit 🛑", "Trailed SL Hit 🛡️", "Manual Close ✋", "Time Exit ⏰"])])
-            
+            st.markdown("*(Note: Estimated/Unverified trades excluded from Win-Rate and Realized P&L)*")
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Verified Win Rate 📊", f"{win_rate}%")
-            c2.metric("Targets Hit 🎯", targets)
-            c3.metric("SLs/Exits Hit 🛑", sls)
-            c4.metric("Realized Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
-        
+            c2.metric("Today's Net P&L", round(today_pnl, 2))
+            c3.metric("Total Net P&L (₹) 💵", round(total_net_pnl, 2), delta=total_net_pnl)
+            c4.metric("Targets / Exits", f"{targets} / {sls}")
+            
+            cc1, cc2 = st.columns([2, 1])
+            with cc1:
+                st.markdown("**Cumulative P&L Trend**")
+                verified_closed['Datetime'] = pd.to_datetime(verified_closed['Date'] + ' ' + verified_closed['Time'])
+                chart_data = verified_closed.sort_values('Datetime').copy()
+                chart_data['Cumulative P&L'] = chart_data['Net P&L'].cumsum()
+                st.line_chart(chart_data, x='Datetime', y='Cumulative P&L')
+            with cc2:
+                st.markdown("**Index-Wise P&L**")
+                idx_pnl = verified_closed.groupby('Index')['Net P&L'].sum().reset_index()
+                st.dataframe(idx_pnl, use_container_width=True, hide_index=True)
+                
         display_cols = [c for c in updated_df.columns if c not in ["Trade ID", "Signal Time", "Exit Time"]]
         try: 
-            # FIX 2: Exact matching strings in style map
-            st.dataframe(updated_df[display_cols].style.map(lambda x: 'background-color: #c8e6c9' if x == 'Target Hit 🎯' else ('background-color: #ffcdd2' if x in ['SL Hit 🛑', 'Pending Exit Price ⏳', 'Trailed SL Hit 🛡️', 'Manual Close ✋', 'Time Exit ⏰'] else ''), subset=['Status']), use_container_width=True)
+            st.dataframe(updated_df[display_cols].style.map(style_status, subset=['Status']), use_container_width=True)
         except:
             st.dataframe(updated_df[display_cols], use_container_width=True)
         st.download_button("💾 Download Journal CSV", data=updated_df.to_csv(index=False).encode('utf-8'), file_name="Options_Journal.csv", mime="text/csv")
