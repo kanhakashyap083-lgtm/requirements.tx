@@ -400,7 +400,7 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
 def style_status(val):
     s = str(val)
     if s.startswith('Target Hit'): return 'background-color: #c8e6c9'
-    if any(x in s for x in ['SL Hit', 'Pending', 'Trailed', 'Manual', 'Time Exit']): return 'background-color: #ffcdd2'
+    if s.startswith('SL Hit') or s.startswith('Pending') or s.startswith('Trailed SL') or s.startswith('Manual Close') or s.startswith('Time Exit'): return 'background-color: #ffcdd2'
     return ''
 
 # --- SIDEBAR & UI ---
@@ -433,7 +433,6 @@ with tab1:
     now_time = now.time()
     in_golden_window = (datetime.time(9, 30) <= now_time <= datetime.time(11, 30)) or (datetime.time(13, 30) <= now_time <= datetime.time(14, 45))
     
-    # FIX 2: Market Open Logic includes weekday check
     market_stat = "Open" if (now.weekday() < 5 and datetime.time(9, 15) <= now_time <= datetime.time(15, 30)) else "Closed"
     
     curr_vix, _, _ = get_vix_status()
@@ -448,7 +447,6 @@ with tab1:
     scan_time_str = st.session_state.last_scan_time.strftime("%H:%M:%S") if st.session_state.last_scan_time else "None"
     err_chip = chip(f"Errors: {st.session_state.api_error_count}", "bad" if st.session_state.api_error_count > 0 else "ok")
     
-    # FIX 3: 15M Trend Chips fetching logic
     t_n = check_15m_trend("^NSEI")
     t_bn = check_15m_trend("^NSEBANK")
     t_sn = check_15m_trend("^BSESN")
@@ -589,7 +587,7 @@ with tab2:
 
     if not updated_df.empty:
         verified_closed = updated_df[(updated_df['Verified'] == True) | (updated_df['Verified'] == "True")]
-        # FIX 1: Secure string matching for inclusion
+        
         verified_closed = verified_closed[verified_closed['Status'].astype(str).str.contains("Target Hit|SL Hit|Trailed SL|Manual Close|Time Exit", regex=True, na=False)]
         
         if not verified_closed.empty:
@@ -600,7 +598,6 @@ with tab2:
             wins, total_closed = len(verified_closed[verified_closed['Net P&L'] > 0]), len(verified_closed)
             win_rate = round((wins / total_closed * 100), 2) if total_closed > 0 else 0
             
-            # FIX 1: Exact string prefix matching
             targets = len(verified_closed[verified_closed['Status'].astype(str).str.startswith("Target Hit")])
             sls = len(verified_closed[verified_closed['Status'].astype(str).str.contains("SL Hit|Trailed SL|Manual Close|Time Exit", regex=True, na=False)])
             
