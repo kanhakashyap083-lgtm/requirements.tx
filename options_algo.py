@@ -155,18 +155,41 @@ def get_live_premium_dhan(d_client, d_token, index_name, strike, opt_type, expir
 
 @st.cache_data(ttl=300)
 def get_vix_data_cached():
-    return yf.Ticker("^INDIAVIX").history(period="2d")
+    data = yf.Ticker("^INDIAVIX").history(period="5d")
+    if data.empty or len(data) < 2:
+        raise ValueError("Yahoo Finance returned empty or insufficient VIX data.")
+    return data
 
 def get_vix_status():
     try:
         vix_data = get_vix_data_cached()
-        if not vix_data.empty and len(vix_data) >= 2:
-            prev_vix = vix_data['Close'].iloc[-2]
-            curr_vix = vix_data['Close'].iloc[-1]
-            return round(curr_vix, 2), (((prev_vix - curr_vix) / prev_vix) * 100 >= 6.0), (curr_vix > 24.0)
+        prev_vix = vix_data['Close'].iloc[-2]
+        curr_vix = vix_data['Close'].iloc[-1]
+        return round(curr_vix, 2), (((prev_vix - curr_vix) / prev_vix) * 100 >= 6.0), (curr_vix > 24.0), "Yahoo"
     except Exception as e:
-        log_and_alert_error(f"VIX Fetch Failed: {e}")
-    return None, False, False 
+        log_and_alert_error(f"Yahoo VIX Fetch Failed: {e}")
+        
+    try:
+        url = "https://www.nseindia.com/api/allIndices"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nseindia.com/option-chain"
+        }
+        sess = requests.Session()
+        sess.get("https://www.nseindia.com", headers=headers, timeout=5)
+        res = sess.get(url, headers=headers, timeout=5).json()
+        for item in res.get('data', []):
+            if item.get('index') == 'INDIA VIX':
+                curr_vix = float(item['last'])
+                prev_vix = float(item['previousClose'])
+                return round(curr_vix, 2), (((prev_vix - curr_vix) / (prev_vix + 1e-9)) * 100 >= 6.0), (curr_vix > 24.0), "NSE"
+        raise ValueError("INDIA VIX not found in NSE data.")
+    except Exception as e:
+        log_and_alert_error(f"NSE VIX Fetch Failed: {e}")
+        
+    return None, False, False, None 
 
 @st.cache_data(ttl=300)
 def check_15m_trend(ticker):
@@ -285,11 +308,11 @@ def update_scorecard(d_client, d_token):
             if mins_active >= 20 and "Time-Stop Alerted" not in str(row['Algo Remarks']):
                 if live_premium is not None:
                     if (0.90 * entry_premium) <= live_premium <= (1.10 * entry_premium):
-                        send_telegram_alert(f"⏱️ TIME-STOP WARNING: {row['Index']} flat & active > 20 mins. Consider exit.")
+                        send_telegram_alert(f"⏱️️ TIME-STOP WARNING: {row['Index']} flat & active > 20 mins. Consider exit.")
                         df.at[index, 'Algo Remarks'] = str(row['Algo Remarks']) + " | Time-Stop Alerted"
                         modified = True
                 else:
-                    send_telegram_alert(f"⏱️ TIME-STOP WARNING: {row['Index']} active > 20 mins (LTP missing). Consider exit.")
+                    send_telegram_alert(f"⏱️️ TIME-STOP WARNING: {row['Index']} active > 20 mins (LTP missing). Consider exit.")
                     df.at[index, 'Algo Remarks'] = str(row['Algo Remarks']) + " | Time-Stop Alerted"
                     modified = True
 
@@ -331,7 +354,7 @@ def update_scorecard(d_client, d_token):
 
 def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
     results = []
-    curr_vix, is_vix_crashing, is_vix_extreme = get_vix_status()
+    curr_vix, is_vix_crashing, is_vix_extreme, _ = get_vix_status()
     
     if curr_vix is None:
         st.error("🚫 Market Locked: VIX is unavailable (Data fetch failed).")
@@ -381,7 +404,7 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
 
             risk_per_lot = base_est_premium * 0.30 * info["lot_size"]
             if risk_per_lot > risk_amt:
-                st.warning(f"⚠️ Trade Skipped for {name}: {info['lot_size']} Qty Risk (₹{round(risk_per_lot, 2)}) > Max Limit (₹{int(risk_amt)})")
+                st.warning(f"⚠️️ Trade Skipped for {name}: {info['lot_size']} Qty Risk (₹{round(risk_per_lot, 2)}) > Max Limit (₹{int(risk_amt)})")
                 continue
                 
             num_lots = max(1, int(risk_amt // risk_per_lot))
@@ -435,8 +458,8 @@ with tab1:
     
     market_stat = "Open" if (now.weekday() < 5 and datetime.time(9, 15) <= now_time <= datetime.time(15, 30)) else "Closed"
     
-    curr_vix, _, _ = get_vix_status()
-    vix_str = f"VIX: {curr_vix}" if curr_vix else "VIX: Err"
+    curr_vix, _, _, vix_src = get_vix_status()
+    vix_str = f"VIX: {curr_vix} ({vix_src})" if curr_vix else "VIX: Err"
     trade_count = get_daily_trade_count()
     
     df_current = load_portfolio()
