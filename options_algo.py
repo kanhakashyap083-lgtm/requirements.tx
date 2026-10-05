@@ -24,6 +24,8 @@ if 'api_error_count' not in st.session_state:
     st.session_state.api_error_count = 0
 if 'last_error_time' not in st.session_state:
     st.session_state.last_error_time = None
+if 'debug_data' not in st.session_state:
+    st.session_state.debug_data = []
 
 try:
     TELEGRAM_TOKEN = st.secrets["TELEGRAM_TOKEN"]
@@ -308,11 +310,11 @@ def update_scorecard(d_client, d_token):
             if mins_active >= 20 and "Time-Stop Alerted" not in str(row['Algo Remarks']):
                 if live_premium is not None:
                     if (0.90 * entry_premium) <= live_premium <= (1.10 * entry_premium):
-                        send_telegram_alert(f"⏱️️ TIME-STOP WARNING: {row['Index']} flat & active > 20 mins. Consider exit.")
+                        send_telegram_alert(f"⏱ TIME-STOP WARNING: {row['Index']} flat & active > 20 mins. Consider exit.")
                         df.at[index, 'Algo Remarks'] = str(row['Algo Remarks']) + " | Time-Stop Alerted"
                         modified = True
                 else:
-                    send_telegram_alert(f"⏱️️ TIME-STOP WARNING: {row['Index']} active > 20 mins (LTP missing). Consider exit.")
+                    send_telegram_alert(f"⏱ TIME-STOP WARNING: {row['Index']} active > 20 mins (LTP missing). Consider exit.")
                     df.at[index, 'Algo Remarks'] = str(row['Algo Remarks']) + " | Time-Stop Alerted"
                     modified = True
 
@@ -354,22 +356,27 @@ def update_scorecard(d_client, d_token):
 
 def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
     results = []
+    debug_info = []
     curr_vix, is_vix_crashing, is_vix_extreme, _ = get_vix_status()
     
     if curr_vix is None:
         st.error("🚫 Market Locked: VIX is unavailable (Data fetch failed).")
+        st.session_state.debug_data = debug_info
         return results
     if is_vix_extreme or is_vix_crashing:
         st.error(f"🚫 Market Locked: VIX is Extreme/Crashing ({curr_vix}).")
+        st.session_state.debug_data = debug_info
         return results
 
     if get_daily_trade_count() >= 3:
         st.error(f"🔒 KILL-SWITCH ACTIVE: Max 3 trades reached.")
+        st.session_state.debug_data = debug_info
         return results
 
     df = load_portfolio()
     active_indices = df[(df['Date'] == get_ist_time().strftime("%Y-%m-%d")) & (df['Status'].astype(str).str.contains("Active"))]['Index'].tolist()
     if active_indices:
+        st.session_state.debug_data = debug_info
         return results
 
     for name, info in INDICES.items():
@@ -388,6 +395,20 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             is_bullish = (live_price > vwap) and (live_price > ema9 > ema21) and (rsi > 55) and (trend_15m == "BULLISH") and (adx_val > 25)
             is_bearish = (live_price < vwap) and (live_price < ema9 < ema21) and (rsi < 45) and (trend_15m == "BEARISH") and (adx_val > 25)
 
+            debug_info.append({
+                "Index": name,
+                "Price": round(live_price, 2),
+                "VWAP": round(vwap, 2),
+                "EMA9": round(ema9, 2),
+                "EMA21": round(ema21, 2),
+                "RSI": round(rsi, 2),
+                "ADX": round(adx_val, 2),
+                "Trend(15M)": trend_15m,
+                "Vol(Last)": int(data_5m['Volume'].iloc[-1]),
+                "Bull": "✅" if is_bullish else "❌",
+                "Bear": "✅" if is_bearish else "❌"
+            })
+
             if not (is_bullish or is_bearish): continue
 
             opt_type, action, strike_price = ("CALL" if is_bullish else "PUT"), (f"🟢 BUY CALL" if is_bullish else f"🔴 BUY PUT"), int(round(live_price / info["step"]) * info["step"])
@@ -404,7 +425,7 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
 
             risk_per_lot = base_est_premium * 0.30 * info["lot_size"]
             if risk_per_lot > risk_amt:
-                st.warning(f"⚠️️ Trade Skipped for {name}: {info['lot_size']} Qty Risk (₹{round(risk_per_lot, 2)}) > Max Limit (₹{int(risk_amt)})")
+                st.warning(f"⚠ Trade Skipped for {name}: {info['lot_size']} Qty Risk (₹{round(risk_per_lot, 2)}) > Max Limit (₹{int(risk_amt)})")
                 continue
                 
             num_lots = max(1, int(risk_amt // risk_per_lot))
@@ -417,6 +438,8 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             })
         except Exception as e:
             log_and_alert_error(f"Scanner Loop Error ({name}): {e}")
+            
+    st.session_state.debug_data = debug_info
     return results
 
 # --- STYLE HELPER FOR DATAFRAME ---
@@ -530,6 +553,12 @@ with tab1:
                     merged_signals.append(f_sig)
                 st.session_state.current_signals = merged_signals
                 st.session_state.last_scan_time = now
+
+    with st.expander("🔍 Why no signal? (Live Debugger)"):
+        if st.session_state.get('debug_data'):
+            st.dataframe(pd.DataFrame(st.session_state.debug_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("No scan data available yet. Please click 'Scan Market Signals Now'.")
 
     if st.session_state.current_signals:
          st.success(f"🚨 {len(st.session_state.current_signals)} Smart Setup(s) Active!")
