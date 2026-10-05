@@ -386,25 +386,68 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             data_5m = yf.Ticker(info["ticker"]).history(period="5d", interval="5m")
             if data_5m.empty or len(data_5m) < 30 or theta_shield_active(data_5m): continue
 
-            trend_15m, vwap, adx_val, live_price = check_15m_trend(info["ticker"]), calculate_vwap(data_5m).iloc[-1], calculate_adx(data_5m), data_5m['Close'].iloc[-1]
+            PROXY_MAP = {"NIFTY 50": "NIFTYBEES.NS", "BANKNIFTY": "BANKBEES.NS"}
+            proxy_ticker = PROXY_MAP.get(name)
+            
+            proxy_price_val = "N/A"
+            proxy_vwap_val = "N/A"
+            above_vwap_str = "N/A"
+            above_vwap = None
+            proxy_vol = 0
+
+            today_str = get_ist_time().strftime("%Y-%m-%d")
+
+            if proxy_ticker:
+                try:
+                    proxy_data = yf.Ticker(proxy_ticker).history(period="5d", interval="5m")
+                    if not proxy_data.empty:
+                        if getattr(proxy_data.index, 'tz', None) is not None:
+                            proxy_data = proxy_data.tz_convert('Asia/Kolkata')
+                        else:
+                            proxy_data = proxy_data.tz_localize('UTC').tz_convert('Asia/Kolkata')
+                        
+                        today_proxy_data = proxy_data[proxy_data.index.strftime("%Y-%m-%d") == today_str]
+                        
+                        if not today_proxy_data.empty and today_proxy_data['Volume'].sum() > 0:
+                            proxy_vol = int(today_proxy_data['Volume'].iloc[-1])
+                            proxy_last = today_proxy_data['Close'].iloc[-1]
+                            
+                            vwap_series = calculate_vwap(today_proxy_data)
+                            proxy_vwap = vwap_series.iloc[-1]
+                            
+                            proxy_price_val = round(proxy_last, 2)
+                            proxy_vwap_val = round(proxy_vwap, 2)
+                            above_vwap = (proxy_last > proxy_vwap)
+                            above_vwap_str = "Yes" if above_vwap else "No"
+                except Exception as e:
+                    pass
+
+            trend_15m = check_15m_trend(info["ticker"])
+            adx_val = calculate_adx(data_5m)
+            live_price = data_5m['Close'].iloc[-1]
             ema9, ema21 = data_5m['Close'].ewm(span=9).mean().iloc[-1], data_5m['Close'].ewm(span=21).mean().iloc[-1]
             delta = data_5m['Close'].diff()
             rs = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / ((-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean() + 1e-9)
             rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-            is_bullish = (live_price > vwap) and (live_price > ema9 > ema21) and (rsi > 55) and (trend_15m == "BULLISH") and (adx_val > 25)
-            is_bearish = (live_price < vwap) and (live_price < ema9 < ema21) and (rsi < 45) and (trend_15m == "BEARISH") and (adx_val > 25)
+            vwap_bull = (above_vwap is True)
+            vwap_bear = (above_vwap is False)
+
+            is_bullish = vwap_bull and (live_price > ema9 > ema21) and (rsi > 55) and (trend_15m == "BULLISH") and (adx_val > 25)
+            is_bearish = vwap_bear and (live_price < ema9 < ema21) and (rsi < 45) and (trend_15m == "BEARISH") and (adx_val > 25)
 
             debug_info.append({
                 "Index": name,
                 "Price": round(live_price, 2),
-                "VWAP": round(vwap, 2),
+                "Proxy Price": proxy_price_val,
+                "Proxy VWAP": proxy_vwap_val,
+                "Above VWAP": above_vwap_str,
                 "EMA9": round(ema9, 2),
                 "EMA21": round(ema21, 2),
                 "RSI": round(rsi, 2),
                 "ADX": round(adx_val, 2),
                 "Trend(15M)": trend_15m,
-                "Vol(Last)": int(data_5m['Volume'].iloc[-1]),
+                "Vol(Last)": proxy_vol,
                 "Bull": "✅" if is_bullish else "❌",
                 "Bear": "✅" if is_bearish else "❌"
             })
