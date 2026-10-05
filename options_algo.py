@@ -430,8 +430,9 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             rs = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / ((-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean() + 1e-9)
             rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-            vwap_bull = (above_vwap is True)
-            vwap_bear = (above_vwap is False)
+            # FIX APPLIED HERE
+            vwap_bull = (above_vwap == True)
+            vwap_bear = (above_vwap == False)
 
             is_bullish = vwap_bull and (live_price > ema9 > ema21) and (rsi > 55) and (trend_15m == "BULLISH") and (adx_val > 25)
             is_bearish = vwap_bear and (live_price < ema9 < ema21) and (rsi < 45) and (trend_15m == "BEARISH") and (adx_val > 25)
