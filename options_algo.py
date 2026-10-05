@@ -7,6 +7,7 @@ import datetime
 import calendar
 import pytz
 import requests
+import time
 from streamlit_autorefresh import st_autorefresh
 import warnings
 
@@ -141,7 +142,6 @@ def get_live_premium_dhan(d_client, d_token, index_name, strike, opt_type, expir
                 headers = {"access-token": d_token, "client-id": d_client, "Content-Type": "application/json", "Accept": "application/json"}
                 payload = {exchange_seg: [int(sec_id)]} 
                 
-                import time
                 time.sleep(1.05) 
                 
                 res = requests.post("https://api.dhan.co/v2/marketfeed/ltp", headers=headers, json=payload, timeout=5)
@@ -430,7 +430,6 @@ def scan_options_market(risk_amt, dynamic_expiries, d_client, d_token):
             rs = delta.clip(lower=0).ewm(com=13, adjust=False).mean() / ((-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean() + 1e-9)
             rsi = 100 - (100 / (1 + rs)).iloc[-1]
 
-            # FIX APPLIED HERE
             vwap_bull = (above_vwap == True)
             vwap_bear = (above_vwap == False)
 
@@ -598,6 +597,54 @@ with tab1:
                 st.session_state.current_signals = merged_signals
                 st.session_state.last_scan_time = now
 
+    with st.expander("🔌 Data Health"):
+        if st.button("Run test", use_container_width=True):
+            def tst_run(name, fn):
+                t0 = time.time()
+                try: 
+                    res, is_ok = fn()
+                    ms = int((time.time()-t0)*1000)
+                    st.write(f"{'✅' if is_ok else '❌'} **{name}**: {res} *(Time: {ms}ms)*")
+                except Exception as e:
+                    st.write(f"❌ **{name}**: Fail - {e} *(Time: {int((time.time()-t0)*1000)}ms)*")
+
+            def t_vix():
+                df = yf.Ticker("^INDIAVIX").history(period="1d")
+                return (f"Pass - {df['Close'].iloc[-1]:.2f}", True) if not df.empty else ("Empty Data", False)
+            def t_nsei():
+                df = yf.Ticker("^NSEI").history(period="1d", interval="5m")
+                return (f"Pass - {len(df)} candles", True) if not df.empty else ("Empty Data", False)
+            def t_bees():
+                df = yf.Ticker("NIFTYBEES.NS").history(period="1d", interval="5m")
+                return (f"Pass - {len(df)} candles", True) if not df.empty else ("Empty Data", False)
+            def t_chain():
+                headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip, deflate"}
+                requests.get("https://www.nseindia.com", headers=headers, timeout=5)
+                res = requests.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY", headers=headers, timeout=5).json()
+                return (f"Pass - Data fetched", True) if 'records' in res else ("Fail", False)
+            def t_allidx():
+                headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "gzip, deflate"}
+                requests.get("https://www.nseindia.com", headers=headers, timeout=5)
+                res = requests.get("https://www.nseindia.com/api/allIndices", headers=headers, timeout=5).json()
+                return (f"Pass - {len(res.get('data', []))} indices", True) if 'data' in res else ("Fail", False)
+            def t_master():
+                df = pd.read_csv("https://images.dhan.co/api-data/api-scrip-master.csv", nrows=10)
+                return (f"Pass - Cols: {list(df.columns[:3])}...", True) if not df.empty else ("Empty Data", False)
+            def t_ltp():
+                if not (d_client and d_token): return ("Skipped (No API Keys)", False)
+                h = {"access-token": d_token, "client-id": d_client, "Content-Type": "application/json"}
+                r = requests.post("https://api.dhan.co/v2/marketfeed/ltp", headers=h, json={"NSE_FNO": [50937]}, timeout=5)
+                return (f"Pass - {r.status_code}", True) if r.status_code == 200 else (f"Fail - {r.status_code} {r.text}", False)
+            
+            with st.spinner("Testing Data Sources... (Not affecting global errors)"):
+                tst_run("Yahoo VIX", t_vix)
+                tst_run("Yahoo 5m (^NSEI)", t_nsei)
+                tst_run("Proxy ETF (NIFTYBEES.NS)", t_bees)
+                tst_run("NSE option chain", t_chain)
+                tst_run("NSE allIndices", t_allidx)
+                tst_run("Dhan scrip master", t_master)
+                tst_run("Dhan LTP", t_ltp)
+
     with st.expander("🔍 Why no signal? (Live Debugger)"):
         if st.session_state.get('debug_data'):
             st.dataframe(pd.DataFrame(st.session_state.debug_data), use_container_width=True, hide_index=True)
@@ -608,7 +655,8 @@ with tab1:
          st.success(f"🚨 {len(st.session_state.current_signals)} Smart Setup(s) Active!")
          for i, sig in enumerate(list(st.session_state.current_signals)):
              card_cls = "sig-call" if sig['Opt Type'] == "CALL" else "sig-put"
-             ds_chip = chip("LTP Verified", "ok") if "Verified" in sig['Data Source'] else chip("LTP Estimated", "warn")
+             is_estimated = "ESTIMATED" in str(sig['Data Source']).upper()
+             ds_chip = chip("LTP Estimated", "warn") if is_estimated else chip("LTP Verified", "ok")
              sl_est = sig['Est Premium'] * 0.70
              r1_est = sig['Est Premium'] * 1.30
              tgt_est = sig['Est Premium'] * 1.60
@@ -617,18 +665,23 @@ with tab1:
              sec_left = max(0, int(180 - (now - sig_time_dt).total_seconds()))
              time_chip = chip(f"{sec_left}s left", "warn" if sec_left < 60 else "ok")
 
+             est_warning_html = "<div style='color:#d32f2f; font-weight:bold; font-size:14px; margin-bottom:10px;'>⚠️ यह भाव अनुमान है; broker app का असली भाव डालो</div>" if is_estimated else ""
+
              st.markdown(f"""
              <div class="sig-card {card_cls}">
                  <div class="title">{sig['Index']} {sig['Strike']} {sig['Opt Type']} <span style="font-size:0.8em; opacity:0.7">({sig['Expiry']})</span></div>
                  <div class="levels">Est: ₹{sig['Est Premium']} | SL: ₹{sl_est:.1f} | 1R: ₹{r1_est:.1f} | TGT: ₹{tgt_est:.1f}</div>
                  <div style="margin-top:5px;">{ds_chip} {time_chip} {chip(sig['Filters'])}</div>
+                 {est_warning_html}
              </div>
              """, unsafe_allow_html=True)
              
              c1, c2, c3 = st.columns([2, 1, 1])
              user_entry = c1.number_input(f"Live Premium (₹) - {sig['Index']}", min_value=5.0, value=float(sig['Est Premium']), step=1.0, key=f"entry_{sig['Index']}_{sig['Opt Type']}")
              
-             if c2.button("✅ Trade Liya", key=f"take_{sig['Index']}_{sig['Opt Type']}", use_container_width=True):
+             disable_take_btn = is_estimated and (user_entry == float(sig['Est Premium']))
+             
+             if c2.button("✅ Trade Liya", key=f"take_{sig['Index']}_{sig['Opt Type']}", use_container_width=True, disabled=disable_take_btn):
                  current_df = load_portfolio()
                  active_now = current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (current_df['Status'].astype(str).str.contains("Active|Pending", regex=True, na=False))]
                  daily_count = len(current_df[(current_df['Date'] == now.strftime("%Y-%m-%d")) & (~current_df['Status'].astype(str).str.contains("Skipped", na=False))])
