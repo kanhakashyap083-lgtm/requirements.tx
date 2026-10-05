@@ -726,4 +726,3 @@ with tab2:
 if auto_mode:
     update_scorecard(d_client, d_token)
     st_autorefresh(interval=60000, key="global_tracking_refresh")
-
